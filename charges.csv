@@ -1,0 +1,10 @@
+Charge,Delivery (%),Intraday (%)
+Brokerage,0.0000000%,0.0300000%
+NSE,0.0030699%,0.0030699%
+BSE,0.0037500%,0.0037500%
+SEBI,0.0001000%,0.0001000%
+Stamp on Buy,0.0150000%,0.0030000%
+IPFT Contribution,0.0000001%,0.0000001%
+STT on Buy/Sell,0.1000000%,0.0250000%
+GST (on Brokerage + Exchange + SEBI + IPFT),18.0000000%,18.0000000%
+DP,13.75,0

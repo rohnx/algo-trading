@@ -1,0 +1,1 @@
+python3 test.py [entry] [size] [volatility] [exchange (nse/bse)] [delivery/intraday] [long/short] [multiplier]
