@@ -51,7 +51,6 @@ else:
         style = "intraday"
         exchange = "nse"
         direction = "long"
-
 # endregion
 
 # region: load variables for intraday and delivery 
@@ -77,27 +76,25 @@ print(f"-----{style.capitalize()} {direction.capitalize()}-----")
 print("Entry:", entry_price)
 print("Risk: ", risk)
 
+def position_size(style,risk,atr):
+    volatility_multiplier=3 if style == "delivery" or style == "d" else 1.7
+    space = volatility_multiplier*atr
+    print("Sizing: ", round(risk/space, 3), "🠚", round(risk/space, 0))
+    return round(risk/space, 0)
+    if round(risk/space) == 0:
+        print("Not enough juice; see ya!")
+        exit()
+
+
 if style == "delivery" or style == "d":
     if direction == "short" or direction == "s":
         print("Shorting is not supported for delivery")
         exit()
     else:
-        volatility_multiplier=3 # default 3x daily ATR for delivery
-        direction="long"
         buy_charge=brokerageD+exc+stamp_buyD+sttD+sebi+ipft+gst_rate*(brokerageD+exc+sebi+ipft) # stt on buy & sell
         sell_charge=brokerageD+exc+sttD+sebi+ipft+gst_rate*(brokerageD+exc+sebi+ipft)
 
-        space=volatility_multiplier*atr
-        size=risk/space
-        print("Sizing: ", round(size, 3), "🠚", round(size))
-        size=round(size)
-
-        if size == 0:
-            print("\nNot enough juice; see ya!")
-            exit()
-
-        buy=entry_price*(1+buy_charge)*size
-        print("Net buy: ",buy)
+        size=position_size(style,risk,atr)
 
         # set-loss is initial stoploss + buy charges + self-sell charges
         stoploss_initial = (entry_price*(1+buy_charge))*size-risk+dp_rate
@@ -123,21 +120,19 @@ if style == "delivery" or style == "d":
             print("Buy charge: ", buy_charge*entry_price*size)
             print("Sell charge (+DP): ", sell_charge*exit_price*size+dp_rate)
             print("Total charges: ", buy_charge*entry_price*size+sell_charge*exit_price*size+dp_rate)
+        else:
+            rewardS=float(input("Reward Scale (integer): ")) if input("Use Reward Scale? [y/n]: ") == "y" else None
+            for num in range(1, int(rewardS)+1):
+                takeprofit_initial=(entry_price*(1+buy_charge))*size+(risk*num)+dp_rate
+                takeprofit=(takeprofit_initial)/(size*(1-sell_charge))
+                print(f"Profit {num}R", ":",round_up(takeprofit,2))
 
 elif style == "intraday" or style == "i":
-    volatility_multiplier=1.7  # default 2x15-minute ATR for intraday
     if direction == "short" or direction == "s":
         sell_charge=brokerageI+exc+sttI+sebi+ipft+gst_rate*(brokerageI+exc+sebi+ipft)
         buy_charge=brokerageI+exc+stamp_buyI+sebi+ipft+gst_rate*(brokerageI+exc+sebi+ipft)
 
-        space=volatility_multiplier*atr
-        size=risk/space
-        print("Sizing: ", round(size, 3), "🠚", round(size))
-        size=round(size)
-
-        if size == 0:
-            print("\nNot enough juice; see ya!")
-            exit()        
+        size=position_size(style,risk,atr)
         
         # set-loss is initial stoploss - buy charges - self-sell charges # stoploss=stoploss_initial*(1-sell_charge)/(1+buy_charge)
         stoploss_initial=(entry_price*(1-sell_charge))*size+risk
@@ -160,21 +155,19 @@ elif style == "intraday" or style == "i":
         if exit_price:
             pnl = (entry_price-exit_price)*size-(sell_charge*entry_price+buy_charge*exit_price)*size
             print("\nPNL: ",pnl)
-            # print("Entry charge: ", sell_charge*entry_price*size)
-            # print("Exit charge: ", buy_charge*exit_price*size)
             print("Total charges: ", sell_charge*entry_price*size+buy_charge*exit_price*size)
+        else:
+            rewardS=float(input("Reward Scale (integer): ")) if input("Use Reward Scale? [y/n]: ") == "y" else None
+            for num in range(1, int(rewardS)+1):
+                takeprofit_initial=(entry_price*(1-sell_charge))*size-(risk*num)
+                takeprofit=(takeprofit_initial)/(size*(1+buy_charge))
+                print(f"Profit {num}R", ":",round_down(takeprofit,2))            
+            
     else:
         buy_charge=brokerageI+exc+stamp_buyI+sebi+ipft+gst_rate*(brokerageI+exc+sebi+ipft) # no stt on buy
         sell_charge=brokerageI+exc+sttI+sebi+ipft+gst_rate*(brokerageI+exc+sebi+ipft)
 
-        space=volatility_multiplier*atr
-        size=risk/space
-        print("Sizing:", round(size, 3), "🠚", round(size))
-        size=round(size)
-
-        if size == 0:
-            print("\nNot enough juice; see ya!")
-            exit()
+        size=position_size(style,risk,atr)
 
         stoploss_initial=(entry_price*(1+buy_charge))*size-risk
         stoploss=(stoploss_initial)/(size*(1-sell_charge))
@@ -194,7 +187,11 @@ elif style == "intraday" or style == "i":
         if exit_price:
             pnl = (exit_price-entry_price)*size-(buy_charge*entry_price+sell_charge*exit_price)*size
             print("\nPNL: ",pnl)
-            # print("Buy charge: ", buy_charge*entry_price*size)
-            # print("Sell charge: ", sell_charge*exit_price*size)
             print("Total charges: ", buy_charge*entry_price*size+sell_charge*exit_price*size)
+        else:
+            rewardS=float(input("Reward Scale (integer): ")) if input("Use Reward Scale? [y/n]: ") == "y" else None
+            for num in range(1, int(rewardS)+1):
+                takeprofit_initial=(entry_price*(1+buy_charge))*size+(risk*num)
+                takeprofit=(takeprofit_initial)/(size*(1-sell_charge))
+                print(f"Profit {num}R", ":",round_up(takeprofit,2))
 
