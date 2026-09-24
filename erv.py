@@ -80,10 +80,10 @@ def position_size(style,risk,atr):
     volatility_multiplier=3 if style == "delivery" or style == "d" else 1.7
     space = volatility_multiplier*atr
     print("Sizing: ", round(risk/space, 3), "🠚", round(risk/space, 0))
-    return round(risk/space, 0)
     if round(risk/space) == 0:
         print("Not enough juice; see ya!")
         exit()
+    return round(risk/space, 0)
 
 
 if style == "delivery" or style == "d":
