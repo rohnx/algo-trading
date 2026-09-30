@@ -76,6 +76,9 @@ print(f"-----{style.capitalize()} {direction.capitalize()}-----")
 print("Entry:", entry_price)
 print("Risk: ", risk)
 
+# total = price*(1+buy_charge) -> price=total/(1+buy_charge)
+# total = price*(1+sell_charge) -> price=total/(1+sell_charge)
+
 def position_size(style,risk,atr):
     volatility_multiplier=3 if style == "delivery" or style == "d" else 1.7
     space = volatility_multiplier*atr
@@ -96,18 +99,15 @@ if style == "delivery" or style == "d":
 
         size=position_size(style,risk,atr)
 
-        # set-loss is initial stoploss + buy charges + self-sell charges
+        # set-target is risk + buy charges + self-sell charges
         stoploss_initial = (entry_price*(1+buy_charge))*size-risk+dp_rate
         stoploss = stoploss_initial/(size*(1-sell_charge))
         print("\nStoploss:",round_up(stoploss,2))
-        # print("pnl",(stoploss-entry_price)*size-dp_rate-(buy_charge*entry_price-sell_charge*stoploss)*size) // verified.
 
-        # total = price*(1+buy_charge) -> price=total/(1+buy_charge)
         breakeven_initial=entry_price*(1+buy_charge)+dp_rate/size
         breakeven=(breakeven_initial)/(1-sell_charge)
         print("Breakeven:",round_up(breakeven,2))
 
-        # set-profit is initial takeprofit + buy charges + self-sell charges
         takeprofit_initial=(entry_price*(1+buy_charge))*size+risk+dp_rate
         takeprofit=(takeprofit_initial)/(size*(1-sell_charge))
         print("Take-Profit:",round_up(takeprofit,2), "\n")
@@ -134,18 +134,15 @@ elif style == "intraday" or style == "i":
 
         size=position_size(style,risk,atr)
         
-        # set-loss is initial stoploss - buy charges - self-sell charges # stoploss=stoploss_initial*(1-sell_charge)/(1+buy_charge)
+        # set-target is risk - buy charges - sell charges
         stoploss_initial=(entry_price*(1-sell_charge))*size+risk
         stoploss=(stoploss_initial)/(size*(1+buy_charge))
         print("\nStoploss:",round_down(stoploss,2))
-        # print("pnl: ",(entry_price-stoploss)*size-(sell_charge*entry_price+buy_charge*stoploss)*size) // verified.
 
-        # total = price*(1+sell_charge) -> price=total/(1+sell_charge)
         breakeven_initial=entry_price*(1-sell_charge)
         breakeven=(breakeven_initial)/(1+buy_charge)
         print("Breakeven:",round_down(breakeven,2))
 
-        # set-profit is initial takeprofit - buy charges - self-sell charges
         takeprofit_initial=(entry_price*(1-sell_charge))*size-risk
         takeprofit=(takeprofit_initial)/(size*(1+buy_charge))
         print("Take-Profit:",round_down(takeprofit,2), "\n")
@@ -169,11 +166,11 @@ elif style == "intraday" or style == "i":
 
         size=position_size(style,risk,atr)
 
+        # set-target is risk + buy charges + self-sell charges
         stoploss_initial=(entry_price*(1+buy_charge))*size-risk
         stoploss=(stoploss_initial)/(size*(1-sell_charge))
         print("\nStoploss:",round_up(stoploss,2))
 
-        # total = price*(1+buy_charge) -> price=total/(1+buy_charge)
         breakeven_initial=entry_price*(1+buy_charge)
         breakeven=(breakeven_initial)/(1-sell_charge)
         print("Breakeven:",round_up(breakeven,2))
