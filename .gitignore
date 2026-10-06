@@ -1,3 +1,11 @@
 .env
 .env.
 *__pycache__/
+
+__pycache__/
+data/
+
+.venv/
+pyproject.toml
+.python-version
+

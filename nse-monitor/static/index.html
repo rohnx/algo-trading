@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NIFTY · ORB</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="instrument"><h1>NIFTY 50</h1><span>15m · ORB 45m</span><strong id="price">—</strong></div>
+    <nav id="date-nav" aria-label="Chart date" title="Scroll up for earlier sessions, down for later sessions">
+      <button id="previous" aria-label="Previous trading session">←</button>
+      <label><span class="sr-only">Session date</span><input id="session-date" type="date" required></label>
+      <button id="next" aria-label="Next trading session">→</button>
+      <button id="today">Today</button>
+    </nav>
+    <div class="session-info"><span id="session-status" role="status">Connecting…</span><span class="trigger">15-min candle close</span></div>
+  </header>
+  <main>
+    <div class="chart-toolbar">
+      <span id="ohlc">Move over a candle to inspect</span>
+      <span id="range">ORB 09:15–10:00 IST</span>
+    </div>
+    <div id="chart-wrap" tabindex="0" role="region" aria-label="15-minute candlestick chart. Scroll up or press left arrow for an earlier session; scroll down or press right arrow for a later session.">
+      <canvas id="chart" role="img" aria-label="NIFTY 50 session chart"></canvas>
+      <div id="empty-state" role="status"></div>
+    </div>
+  </main>
+  <footer>
+    <span id="signal-summary" aria-live="polite">No confirmed breakout</span>
+    <span class="footer-help">Scroll ↑ earlier · ↓ later <span class="divider">/</span> <i class="swatch up"></i> Rising <i class="swatch down"></i> Falling</span>
+    <span id="feed-status">Connecting to feed…</span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[project]
+name = "algo-trading"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pandas>=3.0.6",
+    "requests>=2.34.2",
+    "yfinance>=1.7.0",
+]
+
+[project.scripts]
+algo-trading = "algo_trading:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"

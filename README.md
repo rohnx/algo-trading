@@ -1,43 +1,153 @@
-# Algo Trading - Position & Risk Calculator
+# Algo Trading & Market Toolkit
 
-A Python-based position sizing and risk management tool designed for Indian equity markets (NSE/BSE). It calculates true risk-adjusted position sizes, stop-loss, breakeven, and take-profit levels by accounting for regulatory fees, taxes, and broker charges.
+A comprehensive Python-based algorithmic trading and market monitoring toolkit designed for Indian equity markets (NSE/BSE).
+
+The repository includes:
+1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-nse-monitor)**: A real-time web dashboard and engine tracking NIFTY 50 15-minute candlesticks with 45-minute Opening Range Breakout (ORB) signals.
+2. **[Position & Risk Calculator](#2-position--risk-calculator-ervpy)**: A volatility-adjusted position sizing and risk management tool factoring in exchange fees, brokerages, and regulatory taxes.
 
 ---
 
-#### Examples (default is intraday, long, nse)
+## Setup & Installation with `uv`
 
-- **Intraday Long on NSE:**
-  ```bash
-  python3 erv.py 2500 500 25
-  ```
+This project uses [`uv`](https://docs.astral.sh/uv/) for fast Python package and environment management.
 
-- **Intraday Short on BSE:**
-  ```bash
-  python3 erv.py 1200 400 15 i s bse
-  ```
+### 1. Install `uv` (if not already installed)
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+*(Alternatively, via Homebrew: `brew install uv` or pip: `pip install uv`)*
 
-- **Delivery Long on NSE:**
-  ```bash
-  python3 erv.py 850 1500 30 delivery long nse
-  ```
+### 2. Environment Setup
+The project requires Python **>= 3.14** (specified in `.python-version` and `pyproject.toml`). `uv` will automatically download the correct Python version if it is not present on your system.
 
-## Features
+From the workspace root, run:
+```bash
+uv sync
+```
+This sets up the virtual environment in `.venv/` and installs all locked dependencies (`pandas`, `requests`, `yfinance`).
 
-- **Volatility-Based Sizing**: Calculates position size based on Average True Range (ATR) and capital risk. The default multipliers are chosen as:
+### 3. Running Scripts
+You can run any script directly using `uv run` without manually activating the virtual environment:
+```bash
+# Run the ORB Monitor
+uv run python nse-monitor/orb_monitor.py
+
+# Run the Position Sizing Calculator
+uv run python erv.py 2500 500 25
+```
+
+Alternatively, you can activate the environment manually:
+```bash
+source .venv/bin/activate
+python nse-monitor/orb_monitor.py
+```
+
+---
+
+## 1. NIFTY ORB Monitor (`nse-monitor`)
+
+A real-time 15-minute candlestick chart and 45-minute Opening Range Breakout (ORB) monitoring server for NIFTY 50 (`^NSEI`).
+
+### Features & Strategy Logic
+- **45-Minute Opening Range**: Captures the high and low of the first three 15-minute candles (09:15–10:00 IST). Incomplete opening data prevents premature range locking.
+- **Confirmed Breakout Signals**: Flags the first confirmed 15-minute candle close strictly above the opening range high (Bullish) or below the opening range low (Bearish). Breakouts are marked on the chart with visual arrows.
+- **Interactive Web Interface**: Served at `http://localhost:8765` featuring:
+  - Custom Canvas-based candlestick renderer (dark/light candles, volume bars, ORB boundary lines).
+  - Hover tooltip for exact OHLC and volume inspection.
+  - Multi-session history navigation via mouse scroll, arrow buttons, or calendar date picker.
+  - Quick **Today** button returning to the live trading session while background polling continues.
+- **Session Caching**: Yahoo Finance retains ~60 days of 15-minute intraday bars. Completed trading sessions are automatically cached locally in `nse-monitor/data/` as JSON files for permanent archival.
+- **Automated Session Close**: Concludes the session's final candle at 15:30 IST cleanly without awaiting additional market ticks.
+
+### Usage
+
+#### Standard Live Monitor
+Starts the HTTP/WebSocket server and streams live Yahoo Finance quotes:
+```bash
+uv run python nse-monitor/orb_monitor.py
+```
+Open **[http://localhost:8765](http://localhost:8765)** in your browser.
+
+To bind to a different port:
+```bash
+uv run python nse-monitor/orb_monitor.py --port 9000
+```
+
+#### Replay Mode
+Simulates price action and signals from the most recently completed session:
+```bash
+uv run python nse-monitor/orb_monitor.py --replay
+```
+
+#### Pipe Mode
+Pipes live timestamped quote JSON lines from the WebSocket feeder into the monitor:
+```bash
+uv run python nse-monitor/yf-nse-data.py | uv run python nse-monitor/orb_monitor.py --pipe
+```
+
+---
+
+## 2. Position & Risk Calculator (`erv.py`)
+
+A precision position sizing and trade management tool for NSE/BSE equities. It computes exact net risk, stop-loss, breakeven, and reward targets after factoring in regulatory taxes, stamp duty, turnover charges, and broker commissions.
+
+### Features
+- **Volatility-Based Sizing**: Calculates position size using Average True Range (ATR) and defined capital risk:
   - `1.7 * ATR` for Intraday (typically 15-minute ATR).
   - `3.0 * ATR` for Delivery (typically daily ATR).
-- **Accurate Cost Adjustments**: Factors in all transaction charges to determine exact net stop-loss, breakeven, and profit targets.
-- **Support for Styles & Directions**:
+- **Accurate Cost Deductions**: Accounts for all transaction costs to derive true net breakeven, stop-loss, and profit targets.
+- **Styles & Directions**:
   - **Intraday**: Long and Short.
   - **Delivery**: Long only.
-- **Exchange Support**: NSE and BSE fee rates.
-- **R-Multiple Targets & PnL**: View multiple reward tiers ($1R$, $2R$, etc.) or compute exact PnL and fee breakdown against an exit price.
+- **Exchange Support**: Built-in charge formulas for both NSE and BSE.
+- **R-Multiple Targets & PnL**: View multiple reward tiers ($1R$, $2R$, etc.) or compute net PnL against an exit price.
+
+### Usage
+
+#### 1. Interactive Mode
+Run the script without arguments for interactive prompts:
+```bash
+uv run python erv.py
+```
+Prompts include entry price, risk capital (₹), ATR, trading style (`intraday`/`delivery`), exchange (`nse`/`bse`), and direction (`long`/`short`).
+
+#### 2. Command Line Arguments Mode
+Bypass interactive prompts by passing arguments directly:
+```bash
+uv run python erv.py <entry_price> <risk> [atr] [style] [direction] [exchange]
+```
+
+#### Examples
+- **Intraday Long on NSE:**
+  ```bash
+  uv run python erv.py 2500 500 25
+  ```
+- **Intraday Short on BSE:**
+  ```bash
+  uv run python erv.py 1200 400 15 i s bse
+  ```
+- **Delivery Long on NSE:**
+  ```bash
+  uv run python erv.py 850 1500 30 delivery long nse
+  ```
+
+#### CLI Parameters
+| Position | Parameter | Type | Default | Options / Notes |
+| :---: | :--- | :--- | :--- | :--- |
+| 1 | `entry_price` | Float | *Required* | Entry stock price |
+| 2 | `risk` | Float | *Required* | Total risk capital (₹) |
+| 3 | `atr` | Float | `0.06 * entry` | ATR volatility measure |
+| 4 | `style` | String | `intraday` | `intraday` (`i`) or `delivery` (`d`) |
+| 5 | `direction` | String | `long` | `long` (`l`) or `short` (`s`) |
+| 6 | `exchange` | String | `nse` | `nse` or `bse` |
 
 ---
 
 ## Charges Configuration (`charges.csv`)
 
-Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You can update these rates based on your broker (e.g., Zerodha, Groww, AngelOne) or regulatory revisions:
+Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You can tune these rates based on your broker (Zerodha, Groww, AngelOne, etc.):
 
 | Charge | Description | Delivery | Intraday |
 | :--- | :--- | :--- | :--- |
@@ -48,42 +158,49 @@ Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You 
 | **IPFT Contribution** | Investor Protection Fund fee | 0.0000001% | 0.0000001% |
 | **STT on Buy/Sell** | Securities Transaction Tax | 0.1% (Buy & Sell) | 0.025% (Sell only) |
 | **GST** | 18% on (Brokerage + Exchange + SEBI + IPFT) | 18.0% | 18.0% |
-| **DP** | Depository Participant charge per scrip (flat ₹) | ₹13.75 (on sell) | ₹0.00 |
+| **DP** | Depository Participant charge per scrip | ₹13.75 (flat on sell) | ₹0.00 |
 
 ---
 
-## Usage (`erv.py`)
+## Testing & Quality Assurance
 
-### 1. Interactive Mode
-Run the script without arguments for interactive prompts:
-
+### Python Unit Tests
+Run the test suite verifying monitor logic, candle aggregation, and ORB strategy:
 ```bash
-python3 erv.py
+uv run python -m unittest discover -s nse-monitor/tests
 ```
 
-Prompts:
-- **Entry price**: Price per share.
-- **Risk**: Total capital amount willing to risk (₹).
-- **ATR**: Average True Range (defaults to 6% of entry price if omitted).
-- **Settings**: Style (`delivery`/`intraday`), Exchange (`nse`/`bse`), Direction (`long`/`short`).
-- **Exit Price / Reward Scale**: Provide an exit price for PnL analysis or specify an integer reward scale (e.g., `3` for 1R, 2R, 3R targets).
-
-### 2. Command Line Arguments Mode
-You can also supply arguments directly to bypass the initial setup prompts:
-
+### UI Regression Tests (Playwright)
+Run the headless browser tests verifying Canvas chart rendering and session navigation:
 ```bash
-python3 erv.py <entry_price> <risk> [atr] [style] [direction] [exchange]
+node nse-monitor/tests/test_ui.cjs
 ```
+*(Requires Node.js and Playwright. You can set `PLAYWRIGHT_PATH` or `CHROME_PATH` environment variables if non-standard binary locations are used).*
 
-#### Arguments
-| Position | Parameter | Type | Default | Options / Notes |
-| :---: | :--- | :--- | :--- | :--- |
-| 1 | `entry_price` | Float | *Required* | Entry stock price |
-| 2 | `risk` | Float | *Required* | Total risk capital (₹) |
-| 3 | `atr` | Float | `0.06 * entry` | ATR volatility measure |
-| 4 | `style` | String | `intraday` | `intraday` (`i`) or `delivery` (`d`) |
-| 5 | `direction` | String | `long` | `long` (`l`) or `short` (`s`) |
-| 6 | `exchange` | String | `nse` | `nse` or `bse` |
+---
 
-> [!NOTE]
-> Once the position size, stop-loss, breakeven, and baseline take-profit are calculated and printed, the script prompts whether you wish to enter an **Exit price** (for PnL & fee calculation) or view **Reward Scale** multiples (e.g. $1R$, $2R$, $3R$).
+## Project Structure
+
+```
+algo-trading/
+├── .python-version              # Python version pin (3.14)
+├── pyproject.toml               # Project metadata & dependencies (uv build)
+├── uv.lock                      # Locked dependency tree
+├── charges.csv                  # Indian equity brokerage & tax schedule
+├── erv.py                       # Position sizing & risk calculator
+├── to-do.md                     # Planned features & backlog
+└── nse-monitor/                 # NIFTY ORB Monitor
+    ├── README.md                # Monitor-specific notes
+    ├── orb_monitor.py           # HTTP/WebSocket server & stream engine
+    ├── signals.py               # Candle aggregation & ORB breakout strategy
+    ├── yf-nse-data.py           # Yahoo Finance live websocket stream pipe
+    ├── static/                  # Web dashboard front-end (HTML/CSS/JS)
+    │   ├── index.html
+    │   ├── style.css
+    │   └── app.js
+    ├── data/                    # Cached daily 15-minute OHLC session JSONs
+    └── tests/                   # Test suite
+        ├── test_monitor.py
+        ├── test_signals.py
+        └── test_ui.cjs
+```
