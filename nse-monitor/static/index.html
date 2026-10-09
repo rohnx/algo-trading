@@ -9,28 +9,38 @@
 </head>
 <body>
   <header>
-    <div class="instrument"><h1>NIFTY 50</h1><span>15m · ORB 45m</span><strong id="price">—</strong></div>
-    <nav id="date-nav" aria-label="Chart date" title="Scroll up for earlier sessions, down for later sessions">
+    <div class="instrument"><h1>NIFTY 50</h1><span id="range-name">ORB 30m</span><strong id="price">—</strong></div>
+    <nav id="date-nav" aria-label="Chart date">
       <button id="previous" aria-label="Previous trading session">←</button>
       <label><span class="sr-only">Session date</span><input id="session-date" type="date" required></label>
       <button id="next" aria-label="Next trading session">→</button>
       <button id="today">Today</button>
     </nav>
-    <div class="session-info"><span id="session-status" role="status">Connecting…</span><span class="trigger">15-min candle close</span></div>
+    <div class="session-info">
+      <label class="source-control"><span class="sr-only">Quote source</span><select id="source-select" title="Quote source · one active connection"><option value="yahoo">Yahoo</option><option value="shoonya">Shoonya</option></select></label>
+      <span id="session-status" role="status">Connecting…</span>
+      <span id="confirmation-rule" class="trigger" title="The main signal requires both 15m closes over the 30m opening range and 5m closes over the 45m opening range to agree">15m close · 30m ORB</span>
+      <button id="theme-toggle" class="icon-button quiet" aria-label="Switch to dark mode" aria-pressed="false" title="Switch to dark mode"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 12.6A6.8 6.8 0 0 1 7.4 4a6.9 6.9 0 1 0 8.6 8.6Z"/></svg></button>
+    </div>
   </header>
   <main>
     <div class="chart-toolbar">
       <span id="ohlc">Move over a candle to inspect</span>
-      <span id="range">ORB 09:15–10:00 IST</span>
+      <div class="chart-options">
+        <span id="replay-progress" role="status" hidden></span>
+        <span id="range">ORB 09:15–09:45 IST</span>
+        <div class="interval-control" role="group" aria-label="Candle interval"><button id="interval-15m" aria-pressed="true">15m</button><button id="interval-5m" aria-pressed="false">5m</button></div>
+        <button id="replay" class="icon-button" aria-label="Replay this session" aria-pressed="false" title="Candle-based replay: illustrative OHLC progression, including confirmed signals. Live quotes keep collecting." disabled><svg class="play-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6Z"/></svg><svg class="stop-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="1"/></svg></button>
+      </div>
     </div>
-    <div id="chart-wrap" tabindex="0" role="region" aria-label="15-minute candlestick chart. Scroll up or press left arrow for an earlier session; scroll down or press right arrow for a later session.">
+    <div id="chart-wrap" tabindex="0" role="region" aria-label="15-minute candlestick chart. Press left arrow for an earlier session or right arrow for a later session.">
       <canvas id="chart" role="img" aria-label="NIFTY 50 session chart"></canvas>
       <div id="empty-state" role="status"></div>
     </div>
   </main>
   <footer>
-    <span id="signal-summary" aria-live="polite">No confirmed breakout</span>
-    <span class="footer-help">Scroll ↑ earlier · ↓ later <span class="divider">/</span> <i class="swatch up"></i> Rising <i class="swatch down"></i> Falling</span>
+    <span id="signal-summary" aria-live="polite">Waiting for both ORBs</span>
+    <span class="footer-help"><i class="swatch up"></i> Rising <i class="swatch down"></i> Falling</span>
     <span id="feed-status">Connecting to feed…</span>
   </footer>
 </body>

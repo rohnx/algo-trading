@@ -3,7 +3,7 @@
 A comprehensive Python-based algorithmic trading and market monitoring toolkit designed for Indian equity markets (NSE/BSE).
 
 The repository includes:
-1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-nse-monitor)**: A real-time web dashboard and engine tracking NIFTY 50 15-minute candlesticks with 45-minute Opening Range Breakout (ORB) signals.
+1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-nse-monitor)**: A real-time NIFTY 50 dashboard with 15m/30m and 5m/45m Opening Range Breakout setups, plus a main signal when both agree.
 2. **[Position & Risk Calculator](#2-position--risk-calculator-ervpy)**: A volatility-adjusted position sizing and risk management tool factoring in exchange fees, brokerages, and regulatory taxes.
 
 ---
@@ -48,17 +48,18 @@ python nse-monitor/orb_monitor.py
 
 ## 1. NIFTY ORB Monitor (`nse-monitor`)
 
-A real-time 15-minute candlestick chart and 45-minute Opening Range Breakout (ORB) monitoring server for NIFTY 50 (`^NSEI`).
+A real-time 15-minute and 5-minute candlestick chart with two Opening Range Breakout (ORB) setups for NIFTY 50 (`^NSEI`).
 
 ### Features & Strategy Logic
-- **45-Minute Opening Range**: Captures the high and low of the first three 15-minute candles (09:15–10:00 IST). Incomplete opening data prevents premature range locking.
-- **Confirmed Breakout Signals**: Flags the first confirmed 15-minute candle close strictly above the opening range high (Bullish) or below the opening range low (Bearish). Breakouts are marked on the chart with visual arrows.
+- **Two Opening Ranges**: The 15m chart uses the first 30 minutes (09:15–09:45 IST) and confirms on 15-minute closes. The 5m chart uses the first 45 minutes (09:15–10:00 IST) and confirms on 5-minute closes. Missing opening data prevents that setup from locking.
+- **Setup Arrows and Main Signal**: Each chart marks its own first close strictly above or below its range. The main signal requires both setups' latest valid closes to agree in the same direction, once per direction per day. Inside-range, missing, or invalid latest closes block agreement.
 - **Interactive Web Interface**: Served at `http://localhost:8765` featuring:
   - Custom Canvas-based candlestick renderer (dark/light candles, volume bars, ORB boundary lines).
   - Hover tooltip for exact OHLC and volume inspection.
-  - Multi-session history navigation via mouse scroll, arrow buttons, or calendar date picker.
-  - Quick **Today** button returning to the live trading session while background polling continues.
-- **Session Caching**: Yahoo Finance retains ~60 days of 15-minute intraday bars. Completed trading sessions are automatically cached locally in `nse-monitor/data/` as JSON files for permanent archival.
+  - Multi-session history navigation via arrow buttons or calendar date picker.
+  - Quick **Today** button returning to the live trading session while streaming continues.
+  - Source selection between Yahoo and Shoonya, interval switching, candle replay, and a remembered dark theme.
+- **Session Caching**: Real 5-minute history also supplies aggregated 15-minute bars. Completed sessions are cached separately by provider under `nse-monitor/data/`. Legacy 15-minute-only history can show its own setup but cannot manufacture 5-minute prices or a main signal.
 - **Automated Session Close**: Concludes the session's final candle at 15:30 IST cleanly without awaiting additional market ticks.
 
 ### Usage
