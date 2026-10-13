@@ -3,7 +3,7 @@
 A comprehensive Python-based algorithmic trading and market monitoring toolkit designed for Indian equity markets (NSE/BSE).
 
 The repository includes:
-1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-nse-monitor)**: A real-time NIFTY 50 dashboard with 15m/30m and 5m/45m Opening Range Breakout setups, plus a main signal when both agree.
+1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-orb)**: A real-time NIFTY 50 dashboard with 15m/30m and 5m/45m Opening Range Breakout setups, plus a main signal when both agree.
 2. **[Position & Risk Calculator](#2-position--risk-calculator-ervpy)**: A volatility-adjusted position sizing and risk management tool factoring in exchange fees, brokerages, and regulatory taxes.
 
 ---
@@ -32,7 +32,7 @@ This sets up the virtual environment in `.venv/` and installs all locked depende
 You can run any script directly using `uv run` without manually activating the virtual environment:
 ```bash
 # Run the ORB Monitor
-uv run python nse-monitor/orb_monitor.py
+uv run python orb/orb_monitor.py
 
 # Run the Position Sizing Calculator
 uv run python erv.py 2500 500 25
@@ -41,12 +41,12 @@ uv run python erv.py 2500 500 25
 Alternatively, you can activate the environment manually:
 ```bash
 source .venv/bin/activate
-python nse-monitor/orb_monitor.py
+python orb/orb_monitor.py
 ```
 
 ---
 
-## 1. NIFTY ORB Monitor (`nse-monitor`)
+## 1. NIFTY ORB Monitor (`orb`)
 
 A real-time 15-minute and 5-minute candlestick chart with two Opening Range Breakout (ORB) setups for NIFTY 50 (`^NSEI`).
 
@@ -59,7 +59,7 @@ A real-time 15-minute and 5-minute candlestick chart with two Opening Range Brea
   - Multi-session history navigation via arrow buttons or calendar date picker.
   - Quick **Today** button returning to the live trading session while streaming continues.
   - Source selection between Yahoo and Shoonya, interval switching, candle replay, and a remembered dark theme.
-- **Session Caching**: Real 5-minute history also supplies aggregated 15-minute bars. Completed sessions are cached separately by provider under `nse-monitor/data/`. Legacy 15-minute-only history can show its own setup but cannot manufacture 5-minute prices or a main signal.
+- **Session Caching**: Real 5-minute history also supplies aggregated 15-minute bars. Completed sessions are cached separately by provider under `orb/data/`. Legacy 15-minute-only history can show its own setup but cannot manufacture 5-minute prices or a main signal.
 - **Automated Session Close**: Concludes the session's final candle at 15:30 IST cleanly without awaiting additional market ticks.
 
 ### Usage
@@ -67,26 +67,16 @@ A real-time 15-minute and 5-minute candlestick chart with two Opening Range Brea
 #### Standard Live Monitor
 Starts the HTTP/WebSocket server and streams live Yahoo Finance quotes:
 ```bash
-uv run python nse-monitor/orb_monitor.py
+uv run python orb/orb_monitor.py
 ```
 Open **[http://localhost:8765](http://localhost:8765)** in your browser.
 
 To bind to a different port:
 ```bash
-uv run python nse-monitor/orb_monitor.py --port 9000
+uv run python orb/orb_monitor.py --port 9000
 ```
 
-#### Replay Mode
-Simulates price action and signals from the most recently completed session:
-```bash
-uv run python nse-monitor/orb_monitor.py --replay
-```
-
-#### Pipe Mode
-Pipes live timestamped quote JSON lines from the WebSocket feeder into the monitor:
-```bash
-uv run python nse-monitor/yf-nse-data.py | uv run python nse-monitor/orb_monitor.py --pipe
-```
+Use the chart's play button to replay a saved session while the live feed continues.
 
 ---
 
@@ -168,13 +158,13 @@ Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You 
 ### Python Unit Tests
 Run the test suite verifying monitor logic, candle aggregation, and ORB strategy:
 ```bash
-uv run python -m unittest discover -s nse-monitor/tests
+uv run python -m unittest discover -s orb/tests
 ```
 
 ### UI Regression Tests (Playwright)
 Run the headless browser tests verifying Canvas chart rendering and session navigation:
 ```bash
-node nse-monitor/tests/test_ui.cjs
+node orb/tests/test_ui.cjs
 ```
 *(Requires Node.js and Playwright. You can set `PLAYWRIGHT_PATH` or `CHROME_PATH` environment variables if non-standard binary locations are used).*
 
@@ -190,16 +180,18 @@ algo-trading/
 ├── charges.csv                  # Indian equity brokerage & tax schedule
 ├── erv.py                       # Position sizing & risk calculator
 ├── to-do.md                     # Planned features & backlog
-└── nse-monitor/                 # NIFTY ORB Monitor
+└── orb/                         # NIFTY ORB Monitor
     ├── README.md                # Monitor-specific notes
-    ├── orb_monitor.py           # HTTP/WebSocket server & stream engine
-    ├── signals.py               # Candle aggregation & ORB breakout strategy
-    ├── yf-nse-data.py           # Yahoo Finance live websocket stream pipe
+    ├── orb_monitor.py           # HTTP/SSE server & dual ORB coordination
+    ├── market.py                # Instrument sessions and 5m/15m candles
+    ├── feeds.py                 # Yahoo and Shoonya connections
+    ├── signals.py               # Closed-candle ORB strategy
     ├── static/                  # Web dashboard front-end (HTML/CSS/JS)
     │   ├── index.html
     │   ├── style.css
-    │   └── app.js
-    ├── data/                    # Cached daily 15-minute OHLC session JSONs
+    │   ├── app.js
+    │   └── motion.js
+    ├── data/                    # Cached 5m/15m sessions by provider
     └── tests/                   # Test suite
         ├── test_monitor.py
         ├── test_signals.py

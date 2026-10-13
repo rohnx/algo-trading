@@ -3,10 +3,27 @@ const canvas = $('chart');
 const ctx = canvas.getContext('2d');
 const dateFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
 const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-const sessionDate = (time = new Date()) => dateFormat.format(new Date(time));
-const timeLabel = time => timeFormat.format(new Date(time));
+const dateLabels = new Map(), timeLabels = new Map();
+function formattedTime(format, cache, time) {
+  if (typeof time !== 'string') return format.format(new Date(time));
+  if (!cache.has(time)) {
+    if (cache.size >= 4096) cache.clear();
+    cache.set(time, format.format(new Date(time)));
+  }
+  return cache.get(time);
+}
+const sessionDate = (time = new Date()) => formattedTime(dateFormat, dateLabels, time);
+const timeLabel = time => formattedTime(timeFormat, timeLabels, time);
 const number = value => Number.isFinite(value) ? value.toFixed(2) : '—';
+const percent = value => Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : '—';
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const chartMotion = new ChartMotion();
+const candleLists = new WeakMap();
+const candleClocks = new WeakMap();
+let chartSize = null;
+let comparisonLegendKey = '';
+let tipContext = null;
+const comparisonTips = new Map();
 const sourceName = source => source === 'shoonya' ? 'Shoonya' : 'Yahoo Finance';
 let today = sessionDate();
 let selectedDate = today;
@@ -16,7 +33,9 @@ let selectedSource = 'yahoo';
 let sourceGeneration = -1;
 let sourceEpoch = null;
 let switchingSource = false;
+let pendingSourceSwitch = null;
 let sourceError = '';
+let shoonyaHelpRequest = 0;
 let dates = [];
 let view = null;
 let live = null;
@@ -28,14 +47,16 @@ let requestController;
 let pointer = null;
 let historyNote = '';
 let transition = null;
-let rangeEchoUntil = -Infinity;
 let replay = null;
 let renderFrame = 0;
 let palette;
+let comparisonVisible = true;
+let lastClockState = '';
 
 function readPalette() {
   const style = getComputedStyle(document.documentElement);
-  palette = Object.fromEntries(['up', 'down', 'wick', 'grid', 'chart-label', 'orb-line', 'orb-label', 'orb-fill', 'orb-opening', 'marker', 'price-line', 'price-fill', 'price-ink', 'crosshair', 'crosshair-fill', 'crosshair-ink'].map(key => [key, style.getPropertyValue(`--${key}`).trim()]));
+  palette = Object.fromEntries(['up', 'down', 'wick', 'grid', 'chart-label', 'orb-line', 'orb-label', 'orb-fill', 'orb-opening', 'marker', 'price-line', 'price-fill', 'price-ink', 'crosshair', 'crosshair-fill', 'crosshair-ink', 'comparison-line', 'comparison-line-2', 'comparison-line-3', 'comparison-line-4'].map(key => [key, style.getPropertyValue(`--${key}`).trim()]));
+  comparisonLegendKey = '';
 }
 
 function setTheme(dark) {
@@ -85,8 +106,8 @@ async function loadDates() {
 async function selectDate(date, follow = false) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today) return syncNavigation();
   stopReplay();
+  chartMotion.reset();
   transition = null;
-  rangeEchoUntil = -Infinity;
   selectedDate = date;
   followingToday = follow;
   pointer = null;
@@ -122,9 +143,11 @@ async function selectDate(date, follow = false) {
 async function switchSource(source) {
   if (!['yahoo', 'shoonya'].includes(source) || switchingSource) return;
   stopReplay();
+  chartMotion.reset();
   transition = null;
-  rangeEchoUntil = -Infinity;
   const previousSource = selectedSource, previousLive = live, previousView = view;
+  const pending = { source, previousSource, generation: sourceGeneration, epoch: sourceEpoch, confirmed: false };
+  pendingSourceSwitch = pending;
   selectedSource = source;
   switchingSource = true;
   sourceError = '';
@@ -138,28 +161,90 @@ async function switchSource(source) {
   try {
     const response = await fetch('/api/source', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source }) });
     const data = await response.json();
+    if (pendingSourceSwitch !== pending) return;
     if (!response.ok) throw new Error(data.error || data.message || `Source switch failed (${response.status})`);
-    selectedSource = data.source_id || source;
-    if (data.source_epoch && data.source_epoch !== sourceEpoch) { sourceEpoch = data.source_epoch; sourceGeneration = -1; }
-    sourceGeneration = Math.max(sourceGeneration, data.source_generation ?? -1);
-    live = data;
+    // The stream may already have delivered newer quotes than the POST snapshot.
+    const keepLive = pending.confirmed && live?.source_id === source
+      && (live.source_epoch !== data.source_epoch || (live.source_generation ?? -1) >= (data.source_generation ?? -1));
+    const accepted = keepLive ? live : data;
+    selectedSource = accepted.source_id || source;
+    if (accepted.source_epoch && accepted.source_epoch !== sourceEpoch) { sourceEpoch = accepted.source_epoch; sourceGeneration = -1; }
+    sourceGeneration = Math.max(sourceGeneration, accepted.source_generation ?? -1);
+    live = accepted;
     switchingSource = false;
     loading = false;
     if (selectedDate === live.date) view = live;
     else await selectDate(selectedDate, followingToday);
     loadDates();
   } catch (error) {
-    selectedSource = previousSource;
-    live = previousLive;
-    view = previousView?.date === selectedDate ? previousView : null;
-    sourceError = `Could not switch to ${sourceName(source)}: ${error.message}`;
+    if (pendingSourceSwitch !== pending) return;
+    // Losing the HTTP acknowledgement does not undo a stream-confirmed switch.
+    if (!pending.confirmed || live?.source_id !== source) {
+      selectedSource = previousSource;
+      live = previousLive;
+      view = previousView?.date === selectedDate ? previousView : null;
+      sourceError = `Could not switch to ${sourceName(source)}: ${error.message}`;
+    }
     switchingSource = false;
     if (!view) await selectDate(selectedDate, followingToday);
   } finally {
-    switchingSource = false;
-    loading = false;
-    scheduleRender();
+    if (pendingSourceSwitch === pending) {
+      pendingSourceSwitch = null;
+      switchingSource = false;
+      loading = false;
+      scheduleRender();
+    }
   }
+}
+
+function updateShoonyaHelp(data) {
+  const help = $('shoonya-help');
+  help.hidden = selectedSource !== 'shoonya' || !(data?.feed_status === 'error' || /auth|login|credential/i.test(data?.feed_error || sourceError));
+  if (help.hidden) help.open = false;
+  $('source-retry').disabled = switchingSource;
+}
+
+async function loadShoonyaHelp() {
+  const id = ++shoonyaHelpRequest;
+  const link = $('shoonya-login'), note = $('shoonya-login-note'), client = $('shoonya-client-id');
+  link.hidden = true;
+  link.removeAttribute('href');
+  client.hidden = true;
+  client.textContent = '';
+  note.textContent = 'Loading authorization link…';
+  try {
+    const response = await fetch('/api/shoonya/help');
+    if (!response.ok) throw new Error('Help unavailable');
+    const data = await response.json();
+    if (id !== shoonyaHelpRequest) return;
+    const url = data.login_url && new URL(data.login_url);
+    if (url && url.protocol === 'https:' && url.hostname === 'api.shoonya.com' && !url.port
+        && !url.username && !url.password && !url.hash && url.pathname === '/OAuthlogin/authorize/oauth'
+        && url.searchParams.get('client_id') && [...url.searchParams.keys()].every(key => key === 'client_id')) {
+      link.href = url.href;
+      link.hidden = false;
+      client.textContent = `Client ID: ${url.searchParams.get('client_id')}`;
+      client.hidden = false;
+      note.textContent = '';
+    } else note.textContent = 'Set SHOONYA_CLIENT_ID in .env to enable the authorization link.';
+  } catch {
+    if (id === shoonyaHelpRequest) note.textContent = 'Authorization link unavailable. Check SHOONYA_CLIENT_ID in .env.';
+  }
+}
+
+async function checkPublicIp() {
+  const button = $('check-ip'), output = $('public-ip');
+  button.disabled = true;
+  output.textContent = 'Checking public IP…';
+  try {
+    const response = await fetch('/api/public-ip');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || 'Public IP lookup unavailable. Try curl -s ifconfig.me.');
+    if (typeof data.ip !== 'string' || !data.ip.trim()) throw new Error('No public IP returned. Try curl -s ifconfig.me.');
+    output.textContent = `Public IP: ${data.ip.trim()} — confirm it matches Shoonya’s API IP setting.`;
+  } catch (error) {
+    output.textContent = error.message || 'Could not check public IP. Try curl -s ifconfig.me.';
+  } finally { button.disabled = false; }
 }
 
 function moveDate(direction) {
@@ -168,11 +253,131 @@ function moveDate(direction) {
 }
 
 function getCandles(data = displayView(), interval = selectedInterval) {
+  if (!data) return [];
   const closed = interval === 5 ? data?.candles_5m : data?.candles;
   const active = interval === 5 ? data?.active_candle_5m : data?.active_candle;
+  const cached = candleLists.get(data)?.[interval];
+  if (cached && cached.closed === closed && cached.active === active && cached.date === selectedDate) return cached.list;
   const all = [...(closed || []), ...(active ? [active] : [])];
-  return [...new Map(all.filter(c => sessionDate(c.start_time) === selectedDate && [c.open, c.high, c.low, c.close].every(Number.isFinite)).map(c => [c.start_time, c])).values()]
+  const list = [...new Map(all.filter(c => sessionDate(c.start_time) === selectedDate && [c.open, c.high, c.low, c.close].every(Number.isFinite)).map(c => [c.start_time, c])).values()]
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
+  candleLists.set(data, { ...candleLists.get(data), [interval]: { closed, active, date: selectedDate, list } });
+  return list;
+}
+
+function candleClock(candle) {
+  if (!candleClocks.has(candle)) candleClocks.set(candle, { start: Date.parse(candle.start_time), end: Date.parse(candle.end_time) });
+  return candleClocks.get(candle);
+}
+
+function primaryInstrument(data) {
+  return data?.instruments?.[data.primary_symbol || '^NSEI'] || data;
+}
+
+function comparisonInstruments(data) {
+  return Object.values(data?.instruments || {}).filter(item => item.symbol !== (data.primary_symbol || '^NSEI'));
+}
+
+const comparisonColor = index => palette[index % 4 ? `comparison-line-${index % 4 + 1}` : 'comparison-line'];
+
+function comparisonEntry(instrument, index, text) {
+  const entry = document.createElement('span');
+  entry.className = 'comparison-item';
+  entry.dataset.symbol = instrument.symbol;
+  entry.style.setProperty('--series-color', comparisonColor(index));
+  entry.textContent = `${instrument.label} ${text}`;
+  return entry;
+}
+
+// Sample the selected bars and put each close at its candle's center. The
+// actual quote time still controls replay eligibility and history coverage.
+function comparisonPoints(instrument, cutoff = Infinity) {
+  if (!(instrument?.session_open > 0)) return [];
+  const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
+  const points = cutoff >= opening ? [{ time: opening, price: instrument.session_open, gap: true }] : [];
+  let previous = opening, gap = false;
+  for (const candle of getCandles(instrument, selectedInterval)) {
+    const { start, end } = candleClock(candle);
+    // Backfill has a coverage boundary without claiming a fresh live quote.
+    const quoteTime = candle.is_closed ? end : Date.parse(instrument.last_tick_time ?? instrument.history_coverage_time);
+    if (!Number.isFinite(quoteTime) || quoteTime > cutoff || !candle.is_closed && !(start <= quoteTime && quoteTime < end)) continue;
+    if (candle.close_is_valid === false || candle.is_complete === false) { gap = true; continue; }
+    points.push({ time: (start + end) / 2, quoteTime, barStart: start, barEnd: end, price: candle.close, gap: gap || start > previous });
+    previous = end; gap = false;
+  }
+  return points;
+}
+
+function comparisonStatus(instrument, data) {
+  if (!(primaryInstrument(data)?.session_open > 0) || !(instrument?.session_open > 0) || !Number.isFinite(instrument.current_price)) return 'unavailable';
+  const status = instrument.comparison_status || 'unavailable';
+  const timestamp = Date.parse(instrument.last_tick_time);
+  if (status === 'live' && (!connected || !Number.isFinite(timestamp) || Date.now() - timestamp > 90000)) return 'stale';
+  return status;
+}
+
+function renderComparison(data) {
+  const primary = primaryInstrument(data), comparisons = comparisonInstruments(data);
+  const change = item => item?.session_open > 0 && Number.isFinite(item.current_price) ? (item.current_price / item.session_open - 1) * 100 : null;
+  const primaryStatus = comparisonStatus(primary, data);
+  const key = JSON.stringify([comparisonVisible, primaryStatus, change(primary), comparisons.map(item => [item.symbol, item.label, comparisonStatus(item, data), change(item), item.last_tick_time])]);
+  if (key === comparisonLegendKey) return;
+  comparisonLegendKey = key;
+  $('primary-return').textContent = `NIFTY 50 ${['live', 'closed'].includes(primaryStatus) ? percent(change(primary)) : primaryStatus}`;
+  $('comparison-return').replaceChildren(...comparisons.map((instrument, index) => {
+    const status = comparisonStatus(instrument, data);
+    const entry = comparisonEntry(instrument, index, ['live', 'closed'].includes(status) ? percent(change(instrument)) : status);
+    entry.title = `${instrument.label} · since 09:15 open${instrument.last_tick_time ? ` · last quote ${timeLabel(instrument.last_tick_time)}` : ''}`;
+    entry.dataset.status = status;
+    return entry;
+  }));
+  if (!comparisons.length) $('comparison-return').textContent = 'Indices unavailable';
+  $('comparison-summary').dataset.visible = String(comparisonVisible);
+  $('comparison-toggle').setAttribute('aria-pressed', String(comparisonVisible));
+  $('comparison-toggle').setAttribute('aria-label', `${comparisonVisible ? 'Hide' : 'Show'} NIFTY comparison lines`);
+}
+
+function comparisonSeries(data) {
+  const primary = primaryInstrument(data);
+  if (!comparisonVisible || !(primary?.session_open > 0)) return [];
+  return comparisonInstruments(data).map((instrument, index) => ({ instrument, index,
+    points: comparisonPoints(instrument, data?.replay_time ?? Infinity).map(point => ({
+      ...point, normalized: primary.session_open * point.price / instrument.session_open
+    })) }));
+}
+
+function drawComparisons(data, series, { left, right, top, bottom, xMinute, y }) {
+  const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
+  const position = point => [xMinute(555 + (point.time - opening) / 60000), y(point.normalized)];
+  const inspecting = pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom;
+  for (const { instrument, index, points } of series) {
+    const color = comparisonColor(index);
+    if (points.length) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(left, top, right - left, bottom - top); ctx.clip();
+      ctx.strokeStyle = color; ctx.lineWidth = 1.2;
+      ctx.globalAlpha = ['live', 'closed'].includes(comparisonStatus(instrument, data)) ? .8 : .35;
+      ctx.beginPath();
+      points.forEach(point => ctx[point.gap ? 'moveTo' : 'lineTo'](...position(point)));
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(...position(points.at(-1)), 2, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill(); ctx.restore();
+    }
+    if (!inspecting) continue;
+    const time = opening + (pointer.x - left) / (right - left) * 375 * 60000;
+    const point = points.find(item => item.barStart <= time && (time < item.barEnd
+      || time === item.barEnd && item.barEnd === opening + 375 * 60000));
+    const available = Boolean(point);
+    if (available) {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(...position(point), 3, 0, Math.PI * 2); ctx.stroke();
+    }
+    const entry = comparisonEntry(instrument, index, available
+      ? `${number(point.price)} · ${percent((point.price / instrument.session_open - 1) * 100)} · ${timeLabel(point.barStart ?? point.time)}`
+      : 'unavailable at this time');
+    if (available) entry.title = `Quote ${timeLabel(point.quoteTime ?? point.time)}`;
+    $('comparison-detail').append(entry);
+  }
 }
 
 function setupFor(data, interval = selectedInterval) {
@@ -201,7 +406,6 @@ function setIntervalMinutes(minutes) {
   const rangeFrom = rangeShape(displayView(), previous, now);
   selectedInterval = minutes;
   pointer = null;
-  rangeEchoUntil = now + (reducedMotion.matches ? 0 : 1800);
   transition = reducedMotion.matches ? null : { from: previous, to: minutes, started: now, duration: 420, rangeFrom };
   scheduleRender();
 }
@@ -209,7 +413,7 @@ function setIntervalMinutes(minutes) {
 // Saved bars follow an illustrative open/extreme/extreme/close path. This is
 // candle playback, not a reconstruction of historical tick ordering.
 function partialCandle(candle, time, capturedAt) {
-  const start = Date.parse(candle.start_time), end = Date.parse(candle.end_time);
+  const { start, end } = candleClock(candle);
   if (time < start) return null;
   const observedEnd = candle.is_closed ? end : Math.min(end, Math.max(start + 1, capturedAt));
   if (time >= observedEnd) return { ...candle };
@@ -217,27 +421,42 @@ function partialCandle(candle, time, capturedAt) {
   const progress = Math.max(0, Math.min(1, (time - start) / (observedEnd - start)));
   const path = candle.close >= candle.open ? [candle.open, candle.low, candle.high, candle.close] : [candle.open, candle.high, candle.low, candle.close];
   const segment = Math.min(2, Math.floor(progress * 3));
-  const price = path[segment] + (path[segment + 1] - path[segment]) * (progress * 3 - segment);
+  const fraction = progress * 3 - segment;
+  const eased = fraction * fraction * (3 - 2 * fraction);
+  const price = path[segment] + (path[segment + 1] - path[segment]) * eased;
   const observed = [...path.slice(0, segment + 1), price];
   return { ...candle, high: Math.max(...observed), low: Math.min(...observed), close: price, volume: Math.floor((candle.volume || 0) * progress), is_closed: false };
 }
 
 function replayView(time) {
   const snapshot = replay.snapshot;
-  const originalFive = getCandles(snapshot, 5);
+  const originalFive = replay.five;
   const five = originalFive.map(c => partialCandle(c, time, replay.end)).filter(Boolean);
-  const fifteen = getCandles(snapshot, 15).map(candle => {
-    const start = Date.parse(candle.start_time), end = Date.parse(candle.end_time);
-    const children = originalFive.filter(c => Date.parse(c.start_time) >= start && Date.parse(c.start_time) < end);
-    const coverage = children.length && children.every((c, i) => Date.parse(c.start_time) === start + i * 300000) && (!candle.is_closed || children.length === 3);
+  const fiveByStart = new Map(five.map(c => [c.start_time, c]));
+  const fifteen = replay.fifteen.map(candle => {
+    const { start, end } = candleClock(candle);
+    const children = replay.children.get(candle);
+    const coverage = children.length && children.every((c, i) => candleClock(c).start === start + i * 300000) && (!candle.is_closed || children.length === 3);
     if (!coverage) return partialCandle(candle, time, replay.end);
-    const shown = five.filter(c => Date.parse(c.start_time) >= start && Date.parse(c.start_time) < end);
+    const shown = children.map(c => fiveByStart.get(c.start_time)).filter(Boolean);
     if (!shown.length) return null;
     // Both displays use the same saved 5m progression when available. Genuine
     // smaller bars can be aggregated; a saved 15m bar is never split into data.
     return { ...candle, open: shown[0].open, high: Math.max(...shown.map(c => c.high)), low: Math.min(...shown.map(c => c.low)), close: shown.at(-1).close, volume: shown.reduce((total, c) => total + (c.volume || 0), 0), is_closed: candle.is_closed && time >= end };
   }).filter(Boolean);
   const bars = five.length ? five : fifteen;
+  const instruments = Object.fromEntries(Object.entries(snapshot.instruments || {}).map(([symbol, instrument]) => {
+    const closed = getCandles(instrument, 5).filter(c => c.is_closed && candleClock(c).end <= time);
+    const closedFifteen = getCandles(instrument, 15).filter(c => c.is_closed && candleClock(c).end <= time);
+    const samples = closed.length ? closed : closedFifteen;
+    const last = samples.findLast(c => c.is_complete !== false && c.close_is_valid !== false);
+    const fresh = last && last === samples.at(-1) && time - candleClock(last).end <= (closed.length ? 5 : 15) * 60000;
+    return [symbol, { ...instrument, candles: closedFifteen, candles_5m: closed, active_candle: null, active_candle_5m: null,
+      current_price: last?.close ?? instrument.session_open, last_tick_time: last?.end_time ?? null,
+      comparison_status: instrument.session_open > 0 && fresh ? 'closed' : 'unavailable' }];
+  }));
+  const primarySymbol = snapshot.primary_symbol || '^NSEI';
+  if (instruments[primarySymbol]) instruments[primarySymbol].current_price = bars.at(-1)?.close ?? null;
   const setups = {};
   for (const interval of [15, 5]) {
     const setup = setupFor(snapshot, interval);
@@ -261,7 +480,7 @@ function replayView(time) {
     };
   }
   return {
-    ...snapshot, setups,
+    ...snapshot, setups, instruments, replay_time: time,
     candles: fifteen.filter(c => c.is_closed), active_candle: fifteen.findLast(c => !c.is_closed) || null,
     candles_5m: five.filter(c => c.is_closed), active_candle_5m: five.findLast(c => !c.is_closed) || null,
     current_price: bars.at(-1)?.close ?? null,
@@ -274,13 +493,16 @@ function startReplay() {
   const candles = getCandles(view);
   if (!candles.length || loading || switchingSource) return;
   transition = null;
-  rangeEchoUntil = -Infinity;
   pointer = null;
   const snapshot = JSON.parse(JSON.stringify(view));
+  chartMotion.reset();
   const start = Math.min(...candles.map(c => Date.parse(c.start_time)));
   const last = candles.at(-1);
   const end = last.is_closed ? Date.parse(last.end_time) : Math.min(Date.parse(last.end_time), Date.parse(snapshot.last_tick_time) || Date.now());
   replay = { snapshot, start, end: Math.max(start + 1, end), started: performance.now(), duration: reducedMotion.matches ? 12000 : 24000, time: start, complete: false, frame: null };
+  replay.five = getCandles(snapshot, 5);
+  replay.fifteen = getCandles(snapshot, 15);
+  replay.children = new Map(replay.fifteen.map(c => [c, replay.five.filter(child => candleClock(child).start >= candleClock(c).start && candleClock(child).start < candleClock(c).end)]));
   replay.frame = replayView(start);
   scheduleRender();
 }
@@ -288,6 +510,7 @@ function startReplay() {
 function stopReplay() {
   if (!replay) return;
   replay = null;
+  chartMotion.reset();
   pointer = null;
   scheduleRender();
 }
@@ -298,7 +521,6 @@ function statusText(data = displayView()) {
   if (switchingSource) return 'Switching source…';
   if (loading) return 'Loading…';
   if (replay) return replay.complete ? 'Replay complete' : 'OHLC replay';
-  if (data?.market_status === 'replay') return 'Replay';
   if (selectedDate !== today) return 'Historical';
   const label = timeLabel(new Date());
   const minutes = Number(label.slice(0, 2)) * 60 + Number(label.slice(3));
@@ -312,6 +534,11 @@ function scheduleRender() {
   if (!renderFrame) renderFrame = requestAnimationFrame(render);
 }
 
+function clockState(data = displayView()) {
+  return [statusText(data), comparisonStatus(primaryInstrument(data), data),
+    ...comparisonInstruments(data).map(item => comparisonStatus(item, data))].join('|');
+}
+
 function render(now = performance.now()) {
   renderFrame = 0;
   if (replay && !replay.complete) {
@@ -321,6 +548,7 @@ function render(now = performance.now()) {
     replay.frame = replayView(replay.time);
   }
   const data = displayView();
+  renderComparison(data);
   syncNavigation();
   $('price').textContent = number(data?.current_price);
   const status = statusText(data);
@@ -338,10 +566,13 @@ function render(now = performance.now()) {
     : data && getCandles(data).length && ![15, 5].every(interval => setupFor(data, interval).range_locked) ? 'Opening ranges incomplete' : 'Waiting for both ORBs';
   if ($('signal-summary').textContent !== summary) $('signal-summary').textContent = summary;
   const feedData = live || view;
-  const feedState = switchingSource ? 'Switching source…' : sourceError || feedData?.feed_error || ({ connecting: 'Connecting…', live: 'Feed live', disconnected: 'Feed disconnected', error: 'Feed error' }[feedData?.feed_status]) || (connected ? 'Feed connected' : 'Reconnecting…');
-  $('feed-status').textContent = `${sourceName(selectedSource)} · ${feedState} · IST`;
+  const feedState = switchingSource ? 'Switching source…' : sourceError || feedData?.feed_error
+    || (!connected ? 'Reconnecting…' : ({ connecting: 'Connecting…', disconnected: 'Feed disconnected', error: 'Feed error' }[feedData?.feed_status]) || '');
+  $('feed-status').hidden = !feedState;
+  $('feed-status').textContent = feedState ? `${sourceName(selectedSource)} · ${feedState}` : '';
   $('feed-status').dataset.error = String(Boolean(sourceError || feedData?.feed_error));
   $('feed-status').title = [sourceError || feedData?.feed_error, historyNote].filter(Boolean).join('\n');
+  updateShoonyaHelp(feedData);
   $('replay').disabled = !replay && (loading || switchingSource || !getCandles(view).length);
   $('replay').setAttribute('aria-pressed', String(Boolean(replay)));
   $('replay').setAttribute('aria-label', replay ? 'Stop replay and restore the session' : 'Replay this session');
@@ -352,14 +583,31 @@ function render(now = performance.now()) {
     if ($('replay-progress').textContent !== progress) $('replay-progress').textContent = progress;
   }
   drawChart(now, data);
-  if (transition || now < rangeEchoUntil || replay && !replay.complete) scheduleRender();
+  lastClockState = clockState(data);
+  if (transition || chartMotion.active || replay && !replay.complete) scheduleRender();
 }
 
 function drawChart(now = performance.now(), data = displayView()) {
-  const width = canvas.clientWidth, height = canvas.clientHeight;
+  $('comparison-detail').textContent = '';
+  const width = chartSize?.width ?? canvas.clientWidth, height = chartSize?.height ?? canvas.clientHeight;
   ctx.clearRect(0, 0, width, height);
   if (width < 100 || height < 80) return;
-  const left = 12, right = width - 76, top = 28, bottom = height - 30;
+  const baseline = [primaryInstrument(data)?.session_open, ...comparisonInstruments(data).map(item => `${item.symbol}:${item.session_open}`)];
+  const motionContext = JSON.stringify([selectedDate, data?.date, selectedSource, sourceEpoch, sourceGeneration, Boolean(replay), comparisonVisible, baseline]);
+  if (tipContext !== motionContext) { comparisonTips.clear(); tipContext = motionContext; }
+  chartMotion.begin(motionContext, now,
+    !reducedMotion.matches && !loading && Boolean(replay || selectedDate === today && data?.market_status !== 'closed'));
+  const left = 12, right = width - 76, top = 20, bottom = height - 30;
+  const inspecting = pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom;
+  $('chart-inspector').classList.toggle('is-hovering', Boolean(inspecting));
+  if (inspecting) {
+    const inspectorWidth = Math.min(300, right - left);
+    $('chart-inspector').style.left = `${Math.max(left, Math.min(right - inspectorWidth, pointer.x < (left + right) / 2 ? pointer.x + 16 : pointer.x - inspectorWidth - 16))}px`;
+    $('chart-inspector').style.top = `${Math.max(top, Math.min(bottom - 150, pointer.y + 16))}px`;
+  } else {
+    $('chart-inspector').style.left = `${left}px`;
+    $('chart-inspector').style.top = '0px';
+  }
   // One fixed 09:15–15:30 axis for both candle intervals and opening ranges.
   const dayWidth = right - left;
   const xMinute = minute => left + (minute - 555) / 375 * dayWidth;
@@ -367,7 +615,9 @@ function drawChart(now = performance.now(), data = displayView()) {
   const empty = $('empty-state');
   empty.hidden = candles.length > 0;
   const missingFive = selectedInterval === 5 && !candles.length && getCandles(data, 15).length;
-  empty.textContent = loading ? switchingSource ? 'Switching quote source…' : 'Loading session…' : loadError || (missingFive ? '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.' : data?.message ? `${data.message}\n${data.history_note || ''}` : `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`);
+  empty.textContent = loading ? switchingSource ? 'Switching quote source…' : 'Loading session…' : loadError || (data?.feed_status === 'connecting' && selectedDate === today
+    ? `Connecting to ${sourceName(selectedSource)}… Loading candle history.`
+    : missingFive ? '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.' : data?.message ? `${data.message}\n${data.history_note || ''}` : `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`);
   ctx.font = '10px ui-monospace, monospace';
   ctx.fillStyle = palette['chart-label'];
   ctx.textAlign = 'center';
@@ -386,18 +636,48 @@ function drawChart(now = performance.now(), data = displayView()) {
   if (!candles.length && !outgoing.length) {
     $('ohlc').textContent = 'Move over a candle to inspect';
     canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${selectedInterval}-minute candles. ${empty.textContent}`);
+    chartMotion.end();
     return;
   }
+  const shownCandle = (candle, interval) => {
+    if (candle.is_closed || replay) return candle;
+    return { ...candle, ...Object.fromEntries(['open', 'high', 'low', 'close'].map(field => [field,
+      chartMotion.value(`candle:${interval}:${candle.start_time}:${field}`, candle[field])])) };
+  };
+  const shownFive = getCandles(data, 5).map(c => shownCandle(c, 5));
+  const shownFifteen = getCandles(data, 15).map(c => shownCandle(c, 15));
+  const shown = new Map([...shownFive, ...shownFifteen].map(c => [c.start_time + ':' + (candleClock(c).end - candleClock(c).start), c]));
+  const visualCandle = candle => shown.get(candle.start_time + ':' + (candleClock(candle).end - candleClock(candle).start)) || candle;
+  const shownPrice = Number.isFinite(data?.current_price) && !replay ? chartMotion.value('price', data.current_price) : data?.current_price;
   // Keep the price scale steady too: both views describe the same session.
-  const prices = [...getCandles(data, 15), ...getCandles(data, 5)].flatMap(c => [c.low, c.high]);
+  const prices = [...shownFifteen, ...shownFive].flatMap(c => [c.low, c.high]);
   for (const interval of [15, 5]) {
     const setup = setupFor(data, interval);
     [setup.orb_high, setup.orb_low].forEach(p => { if (Number.isFinite(p)) prices.push(p); });
   }
-  if (Number.isFinite(data?.current_price)) prices.push(data.current_price);
-  let min = Math.min(...prices), max = Math.max(...prices);
-  const padding = (max - min || 20) * .12;
-  min -= padding; max += padding;
+  if (Number.isFinite(shownPrice)) prices.push(shownPrice);
+  // A single percentage geometry fits every visible line, including extremes
+  // earlier in the session. Hiding the group restores the NIFTY-only range.
+  const series = comparisonSeries(data).map(item => {
+    const points = item.points.map(point => ({ ...point }));
+    const last = points.at(-1), previous = points.at(-2);
+    const key = `comparison:${selectedInterval}:${item.instrument.symbol}`;
+    const previousTip = comparisonTips.get(key);
+    const active = selectedInterval === 5 ? item.instrument.active_candle_5m : item.instrument.active_candle;
+    if (!last || last.gap || previousTip > last.time || active && (active.is_complete === false || active.close_is_valid === false)) {
+      chartMotion.tracks.delete(`${key}:price`);
+      chartMotion.tracks.delete(`${key}:time`);
+    } else if (previous) {
+      last.normalized = chartMotion.value(`${key}:price`, last.normalized, replay ? previous.normalized : last.normalized);
+      if (replay) {
+        last.time = Math.max(previous.time, chartMotion.value(`${key}:time`, last.time, previous.time));
+      }
+    }
+    comparisonTips.set(key, item.points.at(-1)?.time);
+    return { ...item, points };
+  });
+  for (const { points } of series) prices.push(...points.map(point => point.normalized));
+  const { min, max } = chartMotion.fit(Math.min(...prices), Math.max(...prices), Math.max(20, (primaryInstrument(data)?.session_open || data?.current_price || 0) * .004));
   const y = price => bottom - (price - min) / (max - min) * (bottom - top);
   const line = (x1, y1, x2, y2, color, dash = []) => {
     ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash(dash);
@@ -414,20 +694,16 @@ function drawChart(now = performance.now(), data = displayView()) {
   const shape = rangeShape(data, selectedInterval, now);
   const hasRange = setup => [setup.orb_high, setup.orb_low].every(Number.isFinite);
   const nearRange = pointer && pointer.x >= left && pointer.x <= right && [primary, secondary].some(setup => hasRange(setup) && [setup.orb_high, setup.orb_low].some(price => Math.abs(pointer.y - y(price)) <= 10));
-  const echo = Math.max(0, Math.min(1, (rangeEchoUntil - now) / 1380));
-  if (hasRange(secondary) && (nearRange || echo > 0)) {
-    ctx.globalAlpha = nearRange ? .5 : .28 * echo;
-    ctx.shadowColor = palette['orb-line']; ctx.shadowBlur = nearRange ? 0 : 2;
+  if (hasRange(secondary) && nearRange) {
+    ctx.globalAlpha = .5;
     const openingX = xMinute(555 + secondary.range_minutes);
     line(openingX, top, openingX, bottom, palette['orb-line'], [1, 5]);
     for (const [price, label] of [[secondary.orb_high, 'H'], [secondary.orb_low, 'L']]) {
       line(left, y(price), right, y(price), palette['orb-line'], [1, 5]);
-      if (nearRange) {
-        ctx.fillStyle = palette['orb-label']; ctx.textAlign = 'left';
-        ctx.fillText(`${secondary.range_minutes}m ${label}`, left + 5, y(price) - 5);
-      }
+      ctx.fillStyle = palette['orb-label']; ctx.textAlign = 'left';
+      ctx.fillText(`${secondary.range_minutes}m ${label}`, left + 5, y(price) - 5);
     }
-    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1;
   }
   if ([shape.high, shape.low].every(Number.isFinite)) {
     const highY = y(shape.high), lowY = y(shape.low), openingX = xMinute(shape.endMinute);
@@ -436,15 +712,15 @@ function drawChart(now = performance.now(), data = displayView()) {
     ctx.fillStyle = palette['orb-opening'];
     ctx.fillRect(left, highY, openingX - left, Math.max(1, lowY - highY));
     line(openingX, top, openingX, bottom, palette['orb-line'], [2, 4]);
-    ctx.fillStyle = palette['orb-label']; ctx.textAlign = 'left';
-    ctx.fillText(rangeEndLabel(primary), openingX + 5, top - 10);
     for (const [price, label] of [[shape.high, 'ORB H'], [shape.low, 'ORB L']]) {
       line(left, y(price), right, y(price), palette['orb-line'], [5, 4]);
       ctx.textAlign = 'right'; ctx.fillStyle = palette['orb-label'];
       ctx.fillText(label, right - 5, y(price) - 5);
     }
   }
+  drawComparisons(data, series, { left, right, top, bottom, xMinute, y });
   function geometry(candle, interval) {
+    candle = visualCandle(candle);
     const label = timeLabel(candle.start_time);
     const minute = Number(label.slice(0, 2)) * 60 + Number(label.slice(3));
     const fifteenWidth = Math.min(26, dayWidth / 25 * .55);
@@ -516,7 +792,7 @@ function drawChart(now = performance.now(), data = displayView()) {
   if (transition) paintSignals(transition.from, outgoing, 1 - progress);
   paintSignals(selectedInterval, candles, transition ? progress : 1);
   if (Number.isFinite(data?.current_price)) {
-    const priceY = y(data.current_price);
+    const priceY = y(shownPrice);
     line(left, priceY, right, priceY, palette['price-line'], [2, 4]);
     ctx.fillStyle = palette['price-fill']; ctx.fillRect(right, priceY - 10, 73, 20);
     ctx.fillStyle = palette['price-ink']; ctx.textAlign = 'center';
@@ -532,12 +808,15 @@ function drawChart(now = performance.now(), data = displayView()) {
   }
   const focus = hovered || candles.at(-1);
   $('ohlc').textContent = focus ? `${timeLabel(focus.start_time)}  O ${number(focus.open)}  H ${number(focus.high)}  L ${number(focus.low)}  C ${number(focus.close)}${focus.close_is_valid === false ? '  · stale close' : focus.is_complete === false ? '  · incomplete' : focus.is_closed ? '' : '  · forming'}` : 'Move over a candle to inspect';
-  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}.${replay ? ' Illustrative candle replay.' : ''}`);
+  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}. ${$('comparison-return').textContent}, lines ${comparisonVisible ? 'shown' : 'hidden'}, percentage change since 09:15 open.${replay ? ' Illustrative candle replay.' : ''}`);
+  chartMotion.end();
 }
 
 function handleEvent(message) {
   if (!message.date) return;
   const fullSnapshot = ['init', 'session', 'status'].includes(message.type);
+  const previousFeedState = `${live?.feed_status}:${live?.feed_error}`;
+  let refreshDates = false;
   if (fullSnapshot && message.source_epoch && message.source_epoch !== sourceEpoch) {
     const restarted = sourceEpoch !== null;
     sourceEpoch = message.source_epoch;
@@ -545,12 +824,11 @@ function handleEvent(message) {
     if (restarted) {
       stopReplay();
       transition = null;
-      rangeEchoUntil = -Infinity;
       live = null;
       view = null;
       ++requestId;
       requestController?.abort();
-      loadDates();
+      refreshDates = true;
     }
   }
   if (message.source_epoch && sourceEpoch && message.source_epoch !== sourceEpoch) return;
@@ -559,35 +837,45 @@ function handleEvent(message) {
     if (switchingSource || !fullSnapshot) return;
     stopReplay();
     transition = null;
-    rangeEchoUntil = -Infinity;
     selectedSource = message.source_id;
     live = null;
     view = null;
     sourceError = '';
     ++requestId;
     requestController?.abort();
-    loadDates();
+    refreshDates = true;
   }
   sourceGeneration = Math.max(sourceGeneration, message.source_generation ?? -1);
+  const pending = pendingSourceSwitch;
+  if (pending && fullSnapshot && message.source_id === pending.source) {
+    const newer = message.source_epoch && message.source_epoch !== pending.epoch || message.source_generation > pending.generation;
+    const targetSnapshot = ['init', 'session'].includes(message.type) && (message.source_generation == null || message.source_generation >= pending.generation)
+      && pending.source !== pending.previousSource;
+    if (newer || targetSnapshot) pending.confirmed = true;
+  }
   if (message.today && message.today !== today) {
     today = message.today;
-    loadDates();
+    refreshDates = true;
     if (followingToday) { stopReplay(); selectedDate = today; view = null; pointer = null; }
   }
   if (fullSnapshot) {
-    const firstSession = !live || message.type === 'session';
+    if (message.type !== 'status') chartMotion.reset();
     live = message;
-    if (message.type !== 'status') loadDates();
-    if (message.market_status === 'replay' && firstSession && followingToday && message.date !== today) {
-      stopReplay();
-      selectedDate = message.date;
-      followingToday = false;
-    }
+    if (message.type !== 'status') refreshDates = true;
   } else {
     if (!live || message.date !== live.date) return;
+    if (message.instruments) {
+      live.instruments = { ...live.instruments };
+      for (const [symbol, fields] of Object.entries(message.instruments)) {
+        live.instruments[symbol] = { ...live.instruments[symbol], ...fields };
+      }
+    }
     if (message.type === 'tick' || message.type === 'state') {
-      Object.assign(live, message);
-      if (message.price != null) live.current_price = message.price;
+      const { instruments, ...fields } = message;
+      if (!message.symbol || message.symbol === (live.primary_symbol || '^NSEI')) {
+        Object.assign(live, fields);
+        if (message.price != null) live.current_price = message.price;
+      }
     } else if (message.type === 'candle_close') {
       const five = message.interval_minutes === 5;
       const closedKey = five ? 'candles_5m' : 'candles';
@@ -595,18 +883,21 @@ function handleEvent(message) {
       live[closedKey] = [...(live[closedKey] || []).filter(c => c.start_time !== message.candle.start_time), message.candle];
       if (live[activeKey]?.start_time === message.candle.start_time) live[activeKey] = null;
       Object.assign(live, Object.fromEntries(['setups', 'signals', 'orb_high', 'orb_low', 'range_locked', 'market_status', 'feed_status', 'feed_error'].filter(k => k in message).map(k => [k, message[k]])));
-    } else if (message.type === 'signal') {
-      if (!(live.signals || []).some(s => s.timestamp === message.signal.timestamp && s.direction === message.signal.direction)) live.signals = [message.signal, ...(live.signals || [])];
     }
   }
-  if (selectedDate === live.date && !switchingSource) {
+  if (selectedDate === live.date && (!switchingSource || pendingSourceSwitch?.confirmed)) {
     ++requestId;
     requestController?.abort();
     view = live;
     loading = false;
     loadError = '';
   } else if (!view && !switchingSource) selectDate(selectedDate, followingToday);
-  scheduleRender();
+  if (refreshDates) loadDates();
+  const quietQuote = !fullSnapshot && ['tick', 'state'].includes(message.type)
+    && (selectedDate !== live.date || replay?.complete) && connected
+    && live.feed_status === 'live' && !live.feed_error && !sourceError
+    && previousFeedState === `${live.feed_status}:${live.feed_error}`;
+  if (!quietQuote) scheduleRender();
 }
 
 $('previous').addEventListener('click', () => moveDate(-1));
@@ -614,11 +905,15 @@ $('next').addEventListener('click', () => moveDate(1));
 $('today').addEventListener('click', () => { selectDate(today, true); loadDates(); });
 $('session-date').addEventListener('change', e => selectDate(e.target.value, e.target.value === today));
 $('source-select').addEventListener('change', e => switchSource(e.target.value));
+$('source-retry').addEventListener('click', () => switchSource('shoonya'));
+$('shoonya-help').addEventListener('toggle', () => { if ($('shoonya-help').open && !$('shoonya-help').hidden) loadShoonyaHelp(); });
+$('check-ip').addEventListener('click', checkPublicIp);
 $('interval-15m').addEventListener('click', () => setIntervalMinutes(15));
 $('interval-5m').addEventListener('click', () => setIntervalMinutes(5));
 $('theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme !== 'dark'));
+$('comparison-toggle').addEventListener('click', () => { comparisonVisible = !comparisonVisible; scheduleRender(); });
 $('replay').addEventListener('click', () => replay ? stopReplay() : startReplay());
-reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { transition = null; rangeEchoUntil = -Infinity; } scheduleRender(); });
+reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { chartMotion.finish(); transition = null; } scheduleRender(); });
 $('chart-wrap').addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); moveDate(e.key === 'ArrowLeft' ? -1 : 1); }
   if (e.key === 'Home') { e.preventDefault(); selectDate(today, true); }
@@ -631,8 +926,9 @@ canvas.addEventListener('pointermove', e => {
 canvas.addEventListener('pointerleave', () => { pointer = null; scheduleRender(); });
 new ResizeObserver(() => {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(canvas.clientWidth * dpr);
-  canvas.height = Math.round(canvas.clientHeight * dpr);
+  chartSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+  canvas.width = Math.round(chartSize.width * dpr);
+  canvas.height = Math.round(chartSize.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); scheduleRender();
 }).observe($('chart-wrap'));
 const stream = new EventSource('/api/stream');
@@ -648,8 +944,7 @@ setInterval(() => {
     if (followingToday) selectDate(today, true);
     loadDates();
   }
-  $('session-status').textContent = statusText();
+  if (clockState() !== lastClockState) scheduleRender();
 }, 1000);
-setInterval(loadDates, 60000);
 selectDate(today, true);
 loadDates();

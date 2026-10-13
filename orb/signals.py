@@ -1,6 +1,6 @@
 """Opening ranges with independently configured closed-bar confirmation."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, time, timezone, timedelta
 from enum import Enum
 
@@ -19,7 +19,6 @@ class Tick:
     price: float
     time: datetime
     volume: int = 0
-    raw: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -146,9 +145,6 @@ class OpeningRangeBreakoutStrategy:
             self.reset_day()
             self.session_date = day
         return True
-
-    def feed_historical_candle(self, candle: Candle) -> Signal | None:
-        return self.on_candle_close(candle)
 
     def on_candle_close(self, candle: Candle) -> Signal | None:
         start, end = _ist(candle.start_time), _ist(candle.end_time)

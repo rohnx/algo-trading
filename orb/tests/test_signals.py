@@ -73,7 +73,7 @@ class OpeningRangeTests(unittest.TestCase):
     def test_missing_or_duplicate_opening_candles_cannot_lock(self):
         strategy = OpeningRangeBreakoutStrategy(range_minutes=45)
         for bar in (opening_bars()[0], opening_bars()[0], opening_bars()[2]):
-            strategy.feed_historical_candle(bar)
+            strategy.on_candle_close(bar)
         self.assertFalse(strategy.range_locked)
         self.assertEqual(len(strategy.range_candles), 2)
         self.assertIsNone(strategy.on_tick(Tick("^NSEI", 200, candle(10, 0).start_time)))
@@ -83,12 +83,12 @@ class OpeningRangeTests(unittest.TestCase):
     def test_partial_history_cannot_lock_or_signal(self):
         strategy = OpeningRangeBreakoutStrategy(range_minutes=45)
         for bar in opening_bars()[:2]:
-            strategy.feed_historical_candle(bar)
-        strategy.feed_historical_candle(candle(9, 45, high=200, low=1, closed=False))
+            strategy.on_candle_close(bar)
+        strategy.on_candle_close(candle(9, 45, high=200, low=1, closed=False))
         self.assertFalse(strategy.range_locked)
         self.assertEqual((strategy.orb_high, strategy.orb_low), (110, 92))
-        strategy.feed_historical_candle(opening_bars()[2])
-        self.assertIsNone(strategy.feed_historical_candle(candle(10, 0, high=200, close=200, closed=False)))
+        strategy.on_candle_close(opening_bars()[2])
+        self.assertIsNone(strategy.on_candle_close(candle(10, 0, high=200, close=200, closed=False)))
         self.assertIsNone(strategy.last_signal)
 
     def test_opening_candle_missing_early_ticks_cannot_lock_range(self):
@@ -148,7 +148,7 @@ class OpeningRangeTests(unittest.TestCase):
     def test_historical_day_rollover_resets_without_ticks(self):
         strategy = OpeningRangeBreakoutStrategy(range_minutes=45)
         lock_range(strategy, day=2)
-        strategy.feed_historical_candle(opening_bars()[0])
+        strategy.on_candle_close(opening_bars()[0])
         self.assertFalse(strategy.range_locked)
         self.assertEqual((strategy.orb_high, strategy.orb_low), (105, 95))
 
@@ -190,7 +190,7 @@ class OpeningRangeTests(unittest.TestCase):
             result = live.on_candle_close(bar)
             if result:
                 live_signals.append(result.to_dict())
-            result = history.feed_historical_candle(bar)
+            result = history.on_candle_close(bar)
             if result:
                 history_signals.append(result.to_dict())
         self.assertEqual(live_signals, history_signals)
@@ -255,14 +255,14 @@ class TimeframePairTests(unittest.TestCase):
         self.assertEqual(signal.timestamp, datetime(2026, 10, 5, 10, 10, tzinfo=IST))
         first = OpeningRangeBreakoutStrategy(range_minutes=45, confirmation_minutes=5)
         for bar in bars:
-            first.feed_historical_candle(bar)
+            first.on_candle_close(bar)
         self.assertEqual(first.on_candle_close(candle(10, 0, minutes=5, high=115, close=113)).timestamp,
                          datetime(2026, 10, 5, 10, 5, tzinfo=IST))
 
     def test_5m_setup_cannot_use_15m_history_or_closes(self):
         strategy = OpeningRangeBreakoutStrategy(range_minutes=45, confirmation_minutes=5)
         for bar in opening_bars():
-            strategy.feed_historical_candle(bar)
+            strategy.on_candle_close(bar)
         self.assertFalse(strategy.range_locked)
         self.assertEqual(strategy.range_candles, [])
         for bar in opening_bars_5m():
@@ -285,12 +285,12 @@ class TimeframePairTests(unittest.TestCase):
         bars = opening_bars_5m()
         bars[4].is_complete = False
         for bar in bars + [bars[0]]:
-            strategy.feed_historical_candle(bar)
+            strategy.on_candle_close(bar)
         self.assertFalse(strategy.range_locked)
         self.assertEqual(len(strategy.range_candles), 8)
         self.assertIsNone(strategy.on_candle_close(candle(10, 0, minutes=5, high=200, close=200)))
         replacement = opening_bars_5m()[4]
-        strategy.feed_historical_candle(replacement)
+        strategy.on_candle_close(replacement)
         self.assertTrue(strategy.range_locked)
         self.assertEqual(len(strategy.range_candles), 9)
 
@@ -394,7 +394,7 @@ class TimeframePairTests(unittest.TestCase):
             for bar in bars:
                 live.on_tick(Tick(bar.symbol, bar.high, bar.start_time), bar)
                 actual = live.on_candle_close(bar)
-                expected = history.feed_historical_candle(bar)
+                expected = history.on_candle_close(bar)
                 if actual:
                     live_signals.append(actual.to_dict())
                 if expected:

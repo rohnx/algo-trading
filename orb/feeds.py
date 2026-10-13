@@ -1,4 +1,4 @@
-"""Single-provider NIFTY feeds, normalized to timestamped prices and 5m bars.
+"""Single-provider index feeds, normalized to timestamped prices and 5m bars.
 
 Provider callbacks only enqueue messages. Every write to the monitor is guarded
 by a generation check, so an old HTTP request or socket cannot cross a switch.
@@ -6,20 +6,43 @@ by a generation check, so an old HTTP request or socket cannot cross a switch.
 
 from collections import deque
 from datetime import datetime, time as dtime, timedelta
+import hashlib
+import json
 import logging
 import math
 import os
 from pathlib import Path
 import queue
 import threading
+from urllib.parse import urlencode
 
 from signals import Candle, IST
+from market import INSTRUMENTS, PRIMARY_SYMBOL
 
-SYMBOL = "^NSEI"
-NIFTY_TOKEN = "26000"
+TOKEN_SYMBOLS = {str(instrument.shoonya_token): symbol
+                 for symbol, instrument in INSTRUMENTS.items()}
+YAHOO_SYMBOLS = {instrument.yahoo_symbol: symbol for symbol, instrument in INSTRUMENTS.items()}
 QUEUE_SIZE = 4096
 ROOT = Path(__file__).resolve().parents[1]
 CREDENTIAL_KEYS = ("SHOONYA_CLIENT_ID", "SHOONYA_USER_ID", "SHOONYA_SECRET_CODE", "SHOONYA_AUTH_CODE")
+REST_TIMEOUT = (3, 10)
+SOCKET_OPEN_TIMEOUT = 3
+SOCKET_CLOSE_TIMEOUT = 1
+
+
+def read_shoonya_credentials():
+    from dotenv import dotenv_values
+    # Read fresh without retaining an expired auth code in the environment.
+    values = {**dotenv_values(ROOT / ".env"),
+              **dotenv_values(ROOT / "shoonya" / ".env"), **os.environ}
+    return {key: values.get(key, "") for key in CREDENTIAL_KEYS}
+
+
+def shoonya_login_url():
+    client_id = read_shoonya_credentials()["SHOONYA_CLIENT_ID"]
+    if not client_id:
+        return None
+    return "https://api.shoonya.com/OAuthlogin/authorize/oauth?" + urlencode({"client_id": client_id})
 
 
 def feed_timestamp(value):
@@ -46,10 +69,10 @@ def _volume(value):
 
 
 class ShoonyaQuotes:
-    """Reconstruct touchline state without inventing a price event timestamp."""
+    """Track touchline volume without inventing a price event timestamp."""
 
-    def __init__(self, now=None):
-        self.state = {}
+    def __init__(self, now=None, *, token=None):
+        self.token = str(token or INSTRUMENTS[PRIMARY_SYMBOL].shoonya_token)
         self.cumulative = None
         self.pending_volume = 0
         self.last_time = None
@@ -58,7 +81,7 @@ class ShoonyaQuotes:
     def update(self, message):
         if (not isinstance(message, dict) or message.get("t") not in ("tk", "tf")
                 or str(message.get("e")) != "NSE"
-                or str(message.get("tk")) != NIFTY_TOKEN):
+                or str(message.get("tk")) != self.token):
             return None
         timestamp = None
         try:
@@ -72,11 +95,8 @@ class ShoonyaQuotes:
                 self.cumulative = None
                 self.pending_volume = 0
             if message["t"] == "tk":
-                self.state[("NSE", NIFTY_TOKEN)] = dict(message)
                 self.cumulative = None
                 self.pending_volume = 0
-            else:
-                self.state.setdefault(("NSE", NIFTY_TOKEN), {}).update(message)
             if "v" in message:
                 cumulative = _volume(message["v"])
                 if self.cumulative is not None and cumulative >= self.cumulative:
@@ -99,7 +119,7 @@ class ShoonyaQuotes:
         return price, volume, timestamp
 
 
-def _history_candle(start, values, volume, now):
+def _history_candle(start, values, volume, now, symbol):
     start = start.replace(tzinfo=IST) if start.tzinfo is None else start.astimezone(IST)
     if (start.weekday() >= 5 or not dtime(9, 15) <= start.time() < dtime(15, 30)
             or start.minute % 5 or start.second or start.microsecond or start > now):
@@ -112,11 +132,11 @@ def _history_candle(start, values, volume, now):
         return None
     session_open = start.replace(hour=9, minute=15)
     end = start + timedelta(minutes=5)
-    return Candle(SYMBOL, *prices, _volume(volume), start, end,
+    return Candle(symbol, *prices, _volume(volume), start, end,
                   is_closed=end <= now, slot=int((start - session_open).total_seconds() // 300))
 
 
-def shoonya_history(rows, now=None):
+def shoonya_history(rows, now=None, *, symbol=PRIMARY_SYMBOL):
     """Parse actual Noren candle fields; intv is interval, v cumulative volume."""
     now = now or datetime.now(IST)
     candles = {}
@@ -133,7 +153,7 @@ def shoonya_history(rows, now=None):
                 except ValueError:
                     start = datetime.strptime(text.replace("/", "-"), "%d-%m-%Y %H:%M:%S")
             candle = _history_candle(start, [row[key] for key in ("into", "inth", "intl", "intc")],
-                                     row.get("intv", 0), now)
+                                     row.get("intv", 0), now, symbol)
             if candle:
                 candles[candle.start_time] = candle
         except (TypeError, ValueError, KeyError, OverflowError, OSError):
@@ -141,21 +161,34 @@ def shoonya_history(rows, now=None):
     return sorted(candles.values(), key=lambda candle: candle.start_time)
 
 
-def fetch_yahoo_5m_history():
+def fetch_yahoo_5m_history(symbol=PRIMARY_SYMBOL):
     import yfinance as yf
-    history = yf.Ticker(SYMBOL).history(period="60d", interval="5m")
+    history = yf.Ticker(INSTRUMENTS[symbol].yahoo_symbol).history(period="60d", interval="5m")
     now = datetime.now(IST)
     candles = []
     for timestamp, row in history.iterrows():
         try:
             candle = _history_candle(timestamp.to_pydatetime(),
                                      [row[key] for key in ("Open", "High", "Low", "Close")],
-                                     row.get("Volume", 0), now)
+                                     row.get("Volume", 0), now, symbol)
             if candle:
                 candles.append(candle)
         except (TypeError, ValueError, OverflowError, OSError):
             continue
     return sorted(candles, key=lambda candle: candle.start_time)
+
+
+def _yahoo_websocket():
+    import yfinance as yf
+    from websockets.sync.client import connect
+
+    class ManagedYahooWebSocket(yf.WebSocket):
+        def _connect(self):
+            if self._ws is None:
+                self._ws = connect(self.url, open_timeout=SOCKET_OPEN_TIMEOUT,
+                                   close_timeout=SOCKET_CLOSE_TIMEOUT)
+
+    return ManagedYahooWebSocket(verbose=False)
 
 
 def _shoonya_api():
@@ -164,9 +197,40 @@ def _shoonya_api():
     class ManagedNorenApi(NorenApi):
         """Repair the installed SDK's disconnected-stop and 100ms retry loop.
 
-        Auth and history retain the working SDK implementation. These private
-        names match NorenRestApiOAuth 0.0.41, imported as NorenRestApiPy.
+        Request fields match the installed SDK, with bounded HTTP waits. These
+        private names match NorenRestApiOAuth 0.0.41, imported as NorenRestApiPy.
         """
+
+        def _post(self, route, values, headers=None):
+            import requests
+            config = self._NorenApi__service_config
+            kwargs = {"data": "jData=" + json.dumps(values), "timeout": REST_TIMEOUT}
+            if headers is not None:
+                kwargs["headers"] = headers
+            response = requests.post(config["host"] + config["routes"][route], **kwargs)
+            return json.loads(response.text)
+
+        def getAccessToken(self, authcode, Secret_Code, client_id, UID):
+            checksum = hashlib.sha256((client_id + Secret_Code + authcode).encode("utf-8")).hexdigest()
+            result = self._post("gen_acs_tok", {"code": authcode, "checksum": checksum, "uid": UID})
+            if "access_token" not in result:
+                return None
+            self._NorenApi__susertoken = result["susertoken"]
+            self._NorenApi__access_token = result["access_token"]
+            self.injectOAuthHeader(result["access_token"], result["USERID"], result["actid"])
+            return result["access_token"], result["USERID"], result["refresh_token"], result["actid"]
+
+        def get_time_price_series(self, exchange, token, starttime=None, endtime=None, interval=None):
+            if starttime is None:
+                starttime = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            values = {"ordersource": "API", "uid": self._NorenApi__username,
+                      "exch": exchange, "token": token, "st": str(starttime)}
+            if endtime is not None:
+                values["et"] = str(endtime)
+            if interval is not None:
+                values["intrv"] = str(interval)
+            result = self._post("TPSeries", values, self._NorenApi__OAuthHeaders)
+            return result if isinstance(result, list) else None
 
         def _NorenApi__ws_run_forever(self):
             self.retry_delay = 1
@@ -201,6 +265,9 @@ def _shoonya_api():
                 thread.join(timeout=5)
                 if thread.is_alive():
                     raise RuntimeError("Shoonya socket did not stop; source switch was cancelled")
+            if thread is None or not thread.is_alive():
+                self._NorenApi__on_open = self._NorenApi__on_disconnect = None
+                self._NorenApi__on_error = self._NorenApi__subscribe_callback = None
 
     # The SDK's DEBUG messages contain login payloads and tokens.
     logging.getLogger("NorenRestApiPy.NorenApi").setLevel(logging.CRITICAL)
@@ -216,6 +283,9 @@ class FeedManager:
         self._generation = 0
         self._switch_lock = threading.Lock()
         self._shoonya_session = None
+        # Swapping providers must not duplicate a still-running history request.
+        self._history_locks = {source: {symbol: threading.Lock() for symbol in INSTRUMENTS}
+                               for source in ("yahoo", "shoonya")}
         self._factories = {"yahoo": yahoo_factory or YahooFeed,
                            "shoonya": shoonya_factory or ShoonyaFeed}
 
@@ -283,12 +353,13 @@ class FeedManager:
 
 
 class _Feed:
-    def __init__(self, manager, generation):
+    def __init__(self, manager, generation, *, source):
         self.manager = manager
         self.generation = generation
         self.stopped = threading.Event()
         self.socket_lock = threading.Lock()
-        self.incoming = queue.Queue(maxsize=QUEUE_SIZE)
+        self.incoming = {symbol: queue.Queue(maxsize=QUEUE_SIZE) for symbol in INSTRUMENTS}
+        self.history_locks = manager._history_locks[source]
 
     def apply(self, action):
         return self.manager._apply(self.generation, action)
@@ -296,26 +367,45 @@ class _Feed:
     def status(self, status, error=None):
         self.apply(lambda: self.manager.hub.set_feed_status(status, error=error))
 
-    def seed(self, candles):
+    def seed(self, candles, symbol):
         def action():
-            self.manager.hub.seed_historical_candles(candles, interval_minutes=5)
-            self.manager.hub.broadcast({"type": "init", **self.manager.hub.snapshot()})
+            hub = self.manager.hub
+            hub.seed_historical_candles(candles, interval_minutes=5, symbol=symbol)
+            if symbol == PRIMARY_SYMBOL:
+                hub.broadcast({"type": "init", **hub.snapshot()})
+            else:
+                hub.broadcast({"type": "state", **hub._instrument_event(symbol)})
         self.apply(action)
 
-    def tick(self, values):
-        self.apply(lambda: self.manager.hub.process_tick(*values))
+    def tick(self, values, symbol):
+        self.apply(lambda: self.manager.hub.process_tick(*values, symbol=symbol))
+
+    def _acquire_history(self, connection, symbol):
+        # A returning connection waits for old work, while stopped waiters exit promptly.
+        lock = self.history_locks[symbol]
+        while self._is_connected(connection):
+            if lock.acquire(timeout=0.1):
+                if self._is_connected(connection):
+                    return lock
+                lock.release()
+                break
+        return None
 
 
 class YahooFeed(_Feed):
-    def __init__(self, manager, generation, *, websocket_factory=None, history_fetcher=None):
-        super().__init__(manager, generation)
+    def __init__(self, manager, generation, *, websocket_factory=None, history_fetcher=None, now=None):
+        super().__init__(manager, generation, source="yahoo")
         self.websocket_factory = websocket_factory
         self.history_fetcher = history_fetcher or fetch_yahoo_5m_history
+        self.now = now or (lambda: datetime.now(IST))
         self.socket = None
         self.overflow = threading.Event()
         self.connection_lock = threading.Lock()
         self.connection = 0
         self.connected = False
+        self.ready = {}
+        self.cutoff = {}
+        self.history_errors = {}
 
     def start(self):
         self.status("connecting")
@@ -325,79 +415,120 @@ class YahooFeed(_Feed):
         self.runner.start()
 
     def _enqueue(self, message, connection):
-        if self.stopped.is_set():
+        if self.stopped.is_set() or not isinstance(message, dict):
+            return
+        provider_symbol = message.get("id")
+        symbol = YAHOO_SYMBOLS.get(provider_symbol) if isinstance(provider_symbol, str) else None
+        if symbol is None:
             return
         try:
-            self.incoming.put_nowait((connection, dict(message)))
+            self.incoming[symbol].put_nowait((connection, dict(message)))
         except queue.Full:
             self.overflow.set()
 
     def _consume(self):
-        while not self.stopped.is_set():
+        while not self.stopped.wait(0.05):
             if self.overflow.is_set():
                 self.status("disconnected", "Yahoo quote queue overflowed; reconnecting")
                 with self.socket_lock:
                     if self.socket is not None:
                         self.socket.close()
                 self.overflow.clear()
-                _clear_queue(self.incoming)
-            try:
-                connection, message = self.incoming.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            with self.connection_lock:
-                if not self.connected or connection != self.connection:
-                    continue
-            try:
-                if message.get("id", SYMBOL) != SYMBOL:
-                    continue
-                price = float(message["price"])
-                timestamp = feed_timestamp(message["time"])
-                if math.isfinite(price) and price > 0:
-                    self.tick((price, _volume(message.get("last_size", 0)), timestamp))
-            except (TypeError, ValueError, KeyError, OverflowError, OSError):
-                continue
+                for incoming in self.incoming.values():
+                    _clear_queue(incoming)
+            for symbol, incoming in self.incoming.items():
+                for _ in range(500):
+                    with self.connection_lock:
+                        connection = self.connection
+                        if not self.connected or self.ready.get(symbol) != connection:
+                            break
+                    try:
+                        queued_connection, message = incoming.get_nowait()
+                    except queue.Empty:
+                        break
+                    if queued_connection != connection:
+                        continue
+                    try:
+                        price = float(message["price"])
+                        timestamp = feed_timestamp(message["time"])
+                        cutoff = self.cutoff.get(symbol)
+                        if math.isfinite(price) and price > 0 and (cutoff is None or timestamp > cutoff):
+                            self.tick((price, _volume(message.get("last_size", 0)), timestamp), symbol)
+                    except (TypeError, ValueError, KeyError, OverflowError, OSError):
+                        continue
+
+    def _is_connected(self, connection):
+        with self.connection_lock:
+            return not self.stopped.is_set() and self.connected and connection == self.connection
+
+    def _refresh_history(self, connection, symbol):
+        lock = self._acquire_history(connection, symbol)
+        if lock is None:
+            return
+        candles = None
+        try:
+            candles = self.history_fetcher(symbol)
+            cutoff = self.now()
+        except Exception:
+            pass
+        finally:
+            lock.release()
+        with self.connection_lock:
+            if self.stopped.is_set() or not self.connected or connection != self.connection:
+                return
+            if candles:
+                self.seed(candles, symbol)
+                # Yahoo has no requested snapshot timestamp. Conservatively
+                # skip quotes observed before the history response to avoid
+                # replaying price/volume already included in its active bar.
+                self.cutoff[symbol] = cutoff
+            else:
+                self.history_errors[symbol] = INSTRUMENTS[symbol].label
+            self.ready[symbol] = connection
+            if PRIMARY_SYMBOL in self.ready:
+                missing = ", ".join(self.history_errors.values())
+                self.status("live", f"Yahoo 5-minute history unavailable: {missing}" if missing else None)
 
     def _run(self):
         delay = 1
         while not self.stopped.is_set():
             self.status("connecting")
-            history_error = None
+            socket = None
             try:
-                candles = self.history_fetcher()
-                if candles:
-                    self.seed(candles)
-                else:
-                    history_error = "Yahoo 5-minute history unavailable"
-            except Exception:
-                history_error = "Yahoo 5-minute history unavailable"
-            try:
-                if self.websocket_factory is None:
-                    import yfinance as yf
-                    factory = lambda: yf.WebSocket(verbose=False)
-                else:
-                    factory = self.websocket_factory
+                factory = self.websocket_factory or _yahoo_websocket
+                socket = factory()
                 with self.socket_lock:
                     if self.stopped.is_set():
                         return
-                    self.socket = factory()
-                    self.socket.subscribe([SYMBOL])
+                    self.socket = socket
+                # Dial outside the lock so stop can signal cancellation at once.
+                # A dial finishing after stop is closed by this runner's finally.
+                socket.subscribe(list(YAHOO_SYMBOLS))
                 with self.connection_lock:
+                    if self.stopped.is_set():
+                        return
                     self.connection += 1
                     connection = self.connection
                     self.connected = True
-                self.status("live", history_error)
-                self.socket.listen(lambda message: self._enqueue(message, connection))
+                    self.ready.clear()
+                    self.cutoff.clear()
+                    self.history_errors.clear()
+                for symbol in INSTRUMENTS:
+                    threading.Thread(target=self._refresh_history, args=(connection, symbol), daemon=True,
+                                     name=f"yahoo-history-{symbol}").start()
+                socket.listen(lambda message: self._enqueue(message, connection))
             except Exception:
                 self.status("disconnected", "Yahoo feed disconnected; reconnecting")
             finally:
                 with self.connection_lock:
                     self.connected = False
-                _clear_queue(self.incoming)
+                for incoming in self.incoming.values():
+                    _clear_queue(incoming)
                 with self.socket_lock:
-                    if self.socket is not None:
-                        self.socket.close()
+                    if self.socket is socket:
                         self.socket = None
+                if socket is not None:
+                    socket.close()
             if not self.stopped.is_set():
                 self.status("disconnected", "Yahoo feed disconnected; reconnecting")
             if self.stopped.wait(delay):
@@ -407,14 +538,14 @@ class YahooFeed(_Feed):
     def stop(self):
         self.stopped.set()
         with self.socket_lock:
-            had_socket = self.socket is not None
-            if self.socket is not None:
-                self.socket.close()
+            socket = self.socket
+        if socket is not None:
+            socket.close()
         for thread in (getattr(self, "worker", None), getattr(self, "runner", None)):
             if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=5 if had_socket else 1)
-        if had_socket and self.runner.is_alive():
-            raise RuntimeError("Yahoo socket did not stop; source switch was cancelled")
+                thread.join(timeout=SOCKET_OPEN_TIMEOUT + SOCKET_CLOSE_TIMEOUT + 1)
+                if thread.is_alive():
+                    raise RuntimeError("Yahoo feed did not stop; source switch was cancelled")
 
 
 def _clear_queue(incoming):
@@ -427,7 +558,7 @@ def _clear_queue(incoming):
 
 class ShoonyaFeed(_Feed):
     def __init__(self, manager, generation, *, api_factory=None, credentials=None, now=None):
-        super().__init__(manager, generation)
+        super().__init__(manager, generation, source="shoonya")
         self.api_factory = api_factory or _shoonya_api
         self.credentials = credentials
         self.now = now or (lambda: datetime.now(IST))
@@ -437,11 +568,11 @@ class ShoonyaFeed(_Feed):
         self.wake = threading.Event()
         self.connection = 0
         self.connected = False
-        self.ready = None
+        self.ready = {}
         self.auth_failed = False
-        self.quotes = ShoonyaQuotes(now=self.now)
-        self.cutoff = None
-        self.history_lock = threading.Lock()
+        self.quotes = {}
+        self.cutoff = {}
+        self.history_errors = {}
 
     def start(self):
         self.status("connecting")
@@ -451,12 +582,7 @@ class ShoonyaFeed(_Feed):
     def _credentials(self):
         if self.credentials is not None:
             return self.credentials
-        from dotenv import dotenv_values
-        # Read fresh on every selection. Persisting .env values into os.environ
-        # would keep an expired auth code even after the user edits the file.
-        values = {**dotenv_values(ROOT / ".env"),
-                  **dotenv_values(ROOT / "shoonya" / ".env"), **os.environ}
-        return {key: values.get(key, "") for key in CREDENTIAL_KEYS}
+        return read_shoonya_credentials()
 
     def _transition(self, kind, detail=None):
         with self.callback_lock:
@@ -486,12 +612,15 @@ class ShoonyaFeed(_Feed):
     def _on_tick(self, message):
         if not isinstance(message, dict):
             return
+        symbol = TOKEN_SYMBOLS.get(str(message.get("tk")))
+        if symbol is None or message.get("e") != "NSE":
+            return
         with self.callback_lock:
             if self.stopped.is_set() or not self.connected:
                 return
             connection = self.connection
         try:
-            self.incoming.put_nowait((connection, dict(message)))
+            self.incoming[symbol].put_nowait((connection, dict(message)))
         except queue.Full:
             self._transition("overflow")
         self.wake.set()
@@ -500,26 +629,29 @@ class ShoonyaFeed(_Feed):
         with self.callback_lock:
             return not self.stopped.is_set() and self.connected and connection == self.connection
 
-    def _refresh_history(self, connection):
+    def _refresh_history(self, connection, symbol):
+        lock = self._acquire_history(connection, symbol)
+        if lock is None:
+            return
         candles = None
-        cutoff = self.now()
+        cutoff = None
         # A hung SDK HTTP request must not spawn more requests on every retry.
-        if self.history_lock.acquire(blocking=False):
-            try:
-                rows = self.api.get_time_price_series(
-                    exchange="NSE", token=NIFTY_TOKEN,
-                    starttime=(cutoff - timedelta(days=60)).replace(hour=0, minute=0, second=0,
-                                                                microsecond=0).timestamp(),
-                    endtime=cutoff.timestamp(), interval=5)
-                candles = shoonya_history(rows, now=self.now()) if isinstance(rows, list) else None
-            except Exception:
-                pass
-            finally:
-                self.history_lock.release()
+        try:
+            cutoff = self.now()
+            rows = self.api.get_time_price_series(
+                exchange="NSE", token=str(INSTRUMENTS[symbol].shoonya_token),
+                starttime=(cutoff - timedelta(days=60)).replace(hour=0, minute=0, second=0,
+                                                            microsecond=0).timestamp(),
+                endtime=cutoff.timestamp(), interval=5)
+            candles = shoonya_history(rows, now=self.now(), symbol=symbol) if isinstance(rows, list) else None
+        except Exception:
+            pass
+        finally:
+            lock.release()
         with self.callback_lock:
             if self.stopped.is_set() or connection != self.connection:
                 return
-            self.controls.append(("history", connection, (candles, cutoff)))
+            self.controls.append(("history", connection, (symbol, candles, cutoff)))
         self.wake.set()
 
     def _control(self, kind, connection, detail):
@@ -527,35 +659,44 @@ class ShoonyaFeed(_Feed):
             if self.stopped.is_set() or connection != self.connection:
                 return
         if kind == "open":
-            self.ready = None
-            self.quotes = ShoonyaQuotes(now=self.now)
-            self.cutoff = None
-            _clear_queue(self.incoming)
+            self.ready.clear()
+            self.quotes = {symbol: ShoonyaQuotes(now=self.now, token=instrument.shoonya_token)
+                           for symbol, instrument in INSTRUMENTS.items()}
+            self.cutoff.clear()
+            self.history_errors.clear()
+            for incoming in self.incoming.values():
+                _clear_queue(incoming)
             self.status("connecting")
             try:
                 with self.socket_lock:
                     if not self._is_connected(connection):
                         return
-                    self.api.subscribe(["NSE|26000"])
-                threading.Thread(target=self._refresh_history, args=(connection,), daemon=True,
-                                 name="shoonya-history").start()
+                    self.api.subscribe([f"NSE|{token}" for token in TOKEN_SYMBOLS])
+                for symbol in INSTRUMENTS:
+                    threading.Thread(target=self._refresh_history, args=(connection, symbol), daemon=True,
+                                     name=f"shoonya-history-{symbol}").start()
             except Exception:
                 self._transition("error")
         elif kind == "history":
             if not self._is_connected(connection):
                 return
-            candles, cutoff = detail
+            symbol, candles, cutoff = detail
             if candles:
-                self.seed(candles)
+                self.seed(candles, symbol)
                 # REST supplied the current candle. Ignore older buffered ticks
                 # to avoid re-applying prices/volume already included in it.
-                self.cutoff = cutoff
-            self.ready = connection
-            note = None if candles else "Shoonya 5-minute history unavailable; waiting for complete live bars"
-            self.status("live", note)
+                self.cutoff[symbol] = cutoff
+            else:
+                self.history_errors[symbol] = INSTRUMENTS[symbol].label
+            self.ready[symbol] = connection
+            if PRIMARY_SYMBOL in self.ready:
+                missing = ", ".join(self.history_errors.values())
+                note = f"Shoonya 5-minute history unavailable: {missing}; waiting for complete live bars" if missing else None
+                self.status("live", note)
         else:
-            self.ready = None
-            _clear_queue(self.incoming)
+            self.ready.clear()
+            for incoming in self.incoming.values():
+                _clear_queue(incoming)
             if kind == "auth_error":
                 self.manager._forget_shoonya(self.api)
                 self.status("error", "Shoonya authentication failed; refresh SHOONYA_AUTH_CODE")
@@ -608,22 +749,25 @@ class ShoonyaFeed(_Feed):
                 self.controls.clear()
             for control in controls:
                 self._control(*control)
-            for _ in range(500):
-                if self.ready is None or not self._is_connected(self.ready):
-                    break
-                with self.callback_lock:
-                    if self.controls:
+            for symbol, incoming in self.incoming.items():
+                for _ in range(500):
+                    ready = self.ready.get(symbol)
+                    if ready is None or not self._is_connected(ready):
                         break
-                try:
-                    connection, message = self.incoming.get_nowait()
-                except queue.Empty:
-                    break
-                if connection != self.ready:
-                    continue
-                values = self.quotes.update(message)
-                if values and (self.cutoff is None or values[2] > self.cutoff):
-                    if self._is_connected(connection):
-                        self.tick(values)
+                    with self.callback_lock:
+                        if self.controls:
+                            break
+                    try:
+                        connection, message = incoming.get_nowait()
+                    except queue.Empty:
+                        break
+                    if connection != ready:
+                        continue
+                    values = self.quotes[symbol].update(message)
+                    cutoff = self.cutoff.get(symbol)
+                    if values and (cutoff is None or values[2] > cutoff):
+                        if self._is_connected(connection):
+                            self.tick(values, symbol)
 
     def stop(self):
         self.stopped.set()

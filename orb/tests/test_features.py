@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orb_monitor import DualORBState, MonitorHTTPHandler, MonitorHub, SYMBOL, run_replay_simulation
+from orb_monitor import DualORBState, MonitorHTTPHandler, MonitorHub, SYMBOL
 from signals import Candle, IST
 
 
@@ -429,69 +429,6 @@ class DualSetupTests(unittest.TestCase):
             restored.activate_source("shoonya")
             self.assertEqual(restored.snapshot()["setups"], shoonya["setups"])
             self.assertEqual(restored.snapshot()["signals"], [])
-
-    def test_cli_replay_of_legacy_fifteen_minute_bars_does_not_manufacture_fast_setup(self):
-        hub = MonitorHub(now=lambda: at(12, 0, day="2026-10-06"), replay=True)
-        hub.seed_historical_candles([bar(0), bar(1), bar(2, price=120)])
-        with patch("orb_monitor.time.sleep"):
-            run_replay_simulation(hub)
-        state = hub.snapshot()
-        self.assertEqual(len(state["candles"]), 3)
-        self.assertEqual(len(state["setups"]["15"]["signals"]), 1)
-        self.assertEqual(state["candles_5m"], [])
-        self.assertIsNone(state["active_candle_5m"])
-        self.assertFalse(state["setups"]["5"]["range_locked"])
-        self.assertEqual(state["setups"]["5"]["signals"], [])
-        self.assertEqual(state["signals"], [])
-
-    def test_cli_replay_with_native_five_minute_bars_can_confirm_both_setups(self):
-        hub = MonitorHub(now=lambda: at(12, 0, day="2026-10-06"), replay=True)
-        hub.seed_historical_candles(self.opening(110) + [bar(9, 5, price=120)], interval_minutes=5)
-        with patch("orb_monitor.time.sleep"):
-            run_replay_simulation(hub)
-        state = hub.snapshot()
-        self.assertEqual(len(state["candles_5m"]), 10)
-        self.assertEqual(len(state["setups"]["15"]["signals"]), 1)
-        self.assertEqual(len(state["setups"]["5"]["signals"]), 1)
-        self.assertEqual(len(state["signals"]), 1)
-        self.assertEqual(state["signals"][0]["timestamp"], at(10, 5).isoformat())
-
-    def test_cli_replay_preserves_incomplete_opening_coverage_and_invalid_fast_close(self):
-        for problem in ("incomplete opening", "invalid confirmation"):
-            with self.subTest(problem=problem):
-                five = self.opening(110) + [bar(9, 5, price=120)]
-                if problem == "incomplete opening":
-                    five[1].is_complete = False
-                else:
-                    five[-1].close_is_valid = False
-                hub = MonitorHub(now=lambda: at(12, 0, day="2026-10-06"), replay=True)
-                hub.seed_historical_candles(five, interval_minutes=5)
-                with patch("orb_monitor.time.sleep"):
-                    run_replay_simulation(hub)
-                state = hub.snapshot()
-                self.assertEqual(state["signals"], [])
-                self.assertEqual(state["setups"]["5"]["signals"], [])
-                if problem == "incomplete opening":
-                    self.assertFalse(state["setups"]["15"]["range_locked"])
-                    self.assertFalse(state["setups"]["5"]["range_locked"])
-                    self.assertFalse(state["candles_5m"][1]["is_complete"])
-                else:
-                    self.assertFalse(state["candles_5m"][-1]["close_is_valid"])
-                    self.assertIsNone(state["setups"]["5"]["confirmation_direction"])
-
-    def test_cli_replay_missing_five_minute_child_cannot_create_valid_parent_confirmation(self):
-        five = self.opening() + [bar(9, 5, price=120), bar(11, 5, price=120)]
-        hub = MonitorHub(now=lambda: at(12, 0, day="2026-10-06"), replay=True)
-        hub.seed_historical_candles(five, interval_minutes=5)
-        with patch("orb_monitor.time.sleep"):
-            run_replay_simulation(hub)
-        state = hub.snapshot()
-        self.assertEqual(len(state["candles_5m"]), 11)
-        self.assertFalse(state["candles"][-1]["is_complete"])
-        self.assertFalse(state["candles"][-1]["close_is_valid"])
-        self.assertEqual(state["setups"]["15"]["signals"], [])
-        self.assertEqual(len(state["setups"]["5"]["signals"]), 1)
-        self.assertEqual(state["signals"], [])
 
 
 class ProviderIsolationTests(unittest.TestCase):

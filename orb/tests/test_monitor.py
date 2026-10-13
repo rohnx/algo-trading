@@ -8,10 +8,13 @@ import queue
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from urllib.error import URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orb_monitor import MonitorHTTPHandler, MonitorHub, SYMBOL, process_quote
+from orb_monitor import MonitorHTTPHandler, MonitorHub, SYMBOL
+from market import INSTRUMENTS
 from signals import Candle, IST
 
 
@@ -31,6 +34,13 @@ def bar(day, slot=0, *, high=110, low=90, close=100):
     start = timestamp(day) + timedelta(minutes=15 * slot)
     return Candle(SYMBOL, 100, high, low, close, 12, start,
                   start + timedelta(minutes=15), is_closed=True, slot=slot)
+
+
+def five_bars(day, *, symbol=SYMBOL):
+    opening = timestamp(day)
+    return [Candle(symbol, 100, 110, 90, 100, 12, opening + timedelta(minutes=5 * slot),
+                   opening + timedelta(minutes=5 * (slot + 1)), is_closed=True, slot=slot)
+            for slot in range(9)]
 
 
 class SessionTests(unittest.TestCase):
@@ -207,7 +217,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(state["date"], "2020-01-01")
         self.assertEqual(state["candles"], [])
         self.assertIn("message", state)
-        self.assertIn("60 days", state["history_note"])
+        self.assertIn("60 calendar days", state["history_note"])
         self.assertEqual(self.hub.date, "2026-10-05")
 
     def test_cached_completed_bars_restore_offline_after_restart(self):
@@ -232,24 +242,43 @@ class SessionTests(unittest.TestCase):
             restored.seed_historical_candles([])
             self.assertEqual(len(restored.snapshot("2026-10-02")["candles"]), 3)
 
-    def test_quote_without_exchange_timestamp_does_not_use_arrival_time(self):
-        process_quote(self.hub, {"price": 999})
-        process_quote(self.hub, {"price": 999, "time": "bad"})
-        self.assertIsNone(self.hub.current_price)
-        packet_time = int(self.clock.value.timestamp() * 1000)
-        process_quote(self.hub, {"id": "OTHER", "price": 999, "time": packet_time})
-        self.assertIsNone(self.hub.current_price)
-        process_quote(self.hub, {"id": SYMBOL, "price": 100, "time": packet_time, "day_volume": 1_000_000})
-        self.assertEqual(self.hub.current_price, 100)
-        self.assertEqual(self.hub.active_candle.volume, 0)
-        self.assertEqual(self.hub.last_tick_time, self.clock.value)
-
     def test_feed_status_distinguishes_stale_feed_from_recent_quote(self):
         self.assertEqual(self.hub.snapshot()["market_status"], "waiting")
         self.hub.process_tick(100, tick_time=self.clock.value)
         self.assertEqual(self.hub.snapshot()["market_status"], "live")
         self.clock.value += timedelta(seconds=91)
         self.assertEqual(self.hub.snapshot()["market_status"], "waiting")
+
+    def test_market_hours_publish_status_without_ticks_or_idle_snapshots(self):
+        clock = Clock(timestamp("2026-10-05", 9, 14, 59))
+        hub = MonitorHub(now=clock)
+        client = queue.Queue()
+        hub.register_client(client)
+        self.assertEqual(client.get_nowait()["market_status"], "closed")
+
+        clock.value = timestamp("2026-10-05", 9, 15)
+        hub.advance_time()
+        opened = client.get_nowait()
+        self.assertEqual((opened["type"], opened["market_status"]), ("status", "waiting"))
+        hub.advance_time()
+        self.assertTrue(client.empty())
+
+        clock.value = timestamp("2026-10-05", 10, 5)
+        for symbol in INSTRUMENTS:
+            hub.seed_historical_candles(five_bars("2026-10-05", symbol=symbol), 5, symbol=symbol)
+        self.assertTrue(client.empty())
+        clock.value = timestamp("2026-10-05", 15, 30)
+        hub.advance_time()
+        closed = client.get_nowait()
+        self.assertEqual((closed["type"], closed["market_status"]), ("status", "closed"))
+        self.assertTrue(all(item["comparison_status"] == "closed" for item in closed["instruments"].values()))
+        hub.advance_time()
+        self.assertTrue(client.empty())
+
+        clock.value = timestamp("2026-10-06", 9, 15)
+        hub.advance_time()
+        self.assertEqual(client.get_nowait()["type"], "session")
+        self.assertTrue(client.empty(), "date rollover already carries the new market status")
 
     def test_sse_init_and_tick_include_session_dates(self):
         client = queue.Queue()
@@ -264,13 +293,106 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(tick["date"], initial["date"])
         self.assertEqual(tick["today"], initial["today"])
 
+    def test_quote_events_serialize_only_active_bars_and_keep_instrument_summary(self):
+        for symbol in INSTRUMENTS:
+            self.hub.seed_historical_candles(five_bars("2026-10-05", symbol=symbol), 5, symbol=symbol)
+        client = queue.Queue()
+        self.hub.register_client(client)
+        initial = client.get_nowait()
+        closed = {id(candle) for instrument in self.hub.instruments.values()
+                  for candle in instrument.candles + instrument.candles_5m}
+        serialize = Candle.to_dict
+
+        def active_only(candle):
+            self.assertNotIn(id(candle), closed, "A quote must not serialize closed history")
+            return serialize(candle)
+
+        for symbol in INSTRUMENTS:
+            with self.subTest(symbol=symbol), patch.object(Candle, "to_dict", active_only):
+                self.assertTrue(self.hub.process_tick(115, 2, self.clock.value, symbol=symbol))
+                event = client.get_nowait()
+            delta = event["instruments"][symbol]
+            self.assertNotIn("candles", delta)
+            self.assertNotIn("candles_5m", delta)
+            full = self.hub.snapshot()["instruments"][symbol]
+            self.assertEqual(delta, {key: value for key, value in full.items()
+                                     if key not in ("candles", "candles_5m")})
+            self.assertEqual(delta["active_candle_5m"]["close"], 115)
+            self.assertEqual(delta["last_tick_time"], self.clock.value.isoformat())
+            self.assertEqual(full["candles_5m"], initial["instruments"][symbol]["candles_5m"])
+
+    def test_candle_close_supplies_full_history_after_quote_delta(self):
+        self.hub.seed_historical_candles(five_bars("2026-10-05"), 5)
+        client = queue.Queue()
+        self.hub.register_client(client)
+        initial = client.get_nowait()
+        self.hub.process_tick(115, 2, self.clock.value)
+        self.assertNotIn("candles_5m", client.get_nowait()["instruments"][SYMBOL])
+        self.clock.value = timestamp("2026-10-05", 10, 9, 59)
+        self.hub.process_tick(116, 3, self.clock.value)
+        client.get_nowait()
+        self.clock.value = timestamp("2026-10-05", 10, 10)
+        self.hub.advance_time()
+        closed = client.get_nowait()
+        self.assertEqual((closed["type"], closed["interval_minutes"]), ("candle_close", 5))
+        instrument = closed["instruments"][SYMBOL]
+        self.assertEqual(instrument["candles_5m"][:-1], initial["candles_5m"])
+        self.assertEqual(instrument["candles_5m"][-1], closed["candle"])
+        self.assertEqual(instrument, self.hub.snapshot()["instruments"][SYMBOL])
+
+    def test_confirmed_signal_arrives_with_close_without_duplicate_signal_event(self):
+        self.clock.value = timestamp("2026-10-05", 10, 0)
+        opening = five_bars("2026-10-05")
+        for candle in opening[6:]:
+            candle.open = candle.close = 115
+            candle.high, candle.low = 120, 110
+        self.hub.seed_historical_candles(opening, 5)
+        for minute in range(5):
+            self.clock.value = timestamp("2026-10-05", 10, minute)
+            self.hub.process_tick(125, tick_time=self.clock.value)
+        client = queue.Queue()
+        self.hub.register_client(client)
+        initial = client.get_nowait()
+        self.assertEqual(initial["last_tick_time"], self.clock.value.isoformat())
+        self.assertEqual(initial["signals"], [])
+        self.clock.value = timestamp("2026-10-05", 10, 5)
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            self.hub.advance_time()
+        closed = client.get_nowait()
+        self.assertEqual((closed["type"], closed["interval_minutes"]), ("candle_close", 5))
+        self.assertEqual(len(closed["signals"]), 1)
+        signal = closed["signals"][0]
+        self.assertEqual(signal["direction"], "BULLISH")
+        self.assertEqual(signal["timestamp"], self.clock.value.isoformat())
+        self.assertEqual(signal["confirmations"]["15"]["confirmed_at"],
+                         timestamp("2026-10-05", 10, 0).isoformat())
+        self.assertEqual(signal["confirmations"]["5"]["confirmed_at"], self.clock.value.isoformat())
+        self.assertIn(signal["message"], output.getvalue())
+        self.assertTrue(client.empty())
+
     def test_backlogged_sse_client_receives_complete_snapshot(self):
+        self.hub.seed_historical_candles(five_bars("2026-10-05"), 5)
         client = queue.Queue(maxsize=1)
         self.hub.register_client(client)
         self.hub.process_tick(100, tick_time=self.clock.value)
         recovered = client.get_nowait()
         self.assertEqual(recovered["type"], "init")
         self.assertEqual(recovered["active_candle"]["close"], 100)
+        self.assertEqual(len(recovered["instruments"][SYMBOL]["candles_5m"]), 9)
+        self.assertEqual(len(recovered["candles"]), 3)
+
+    def test_backlogged_clients_share_one_complete_recovery_snapshot(self):
+        clients = [queue.Queue(maxsize=1), queue.Queue(maxsize=1)]
+        for client in clients:
+            self.hub.register_client(client)
+        with patch.object(self.hub, "_snapshot", wraps=self.hub._snapshot) as snapshot:
+            self.hub.process_tick(100, tick_time=self.clock.value)
+            self.assertEqual(snapshot.call_count, 1)
+        events = [client.get_nowait() for client in clients]
+        self.assertEqual(events[0], events[1])
+        self.assertEqual(events[0]["type"], "init")
+        self.assertEqual(events[0]["active_candle"]["close"], 100)
 
 
 class HTTPTests(unittest.TestCase):
@@ -303,6 +425,20 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(data["earliest_date"], "2026-10-02")
         self.assertEqual(data["today"], "2026-10-05")
 
+    def test_idle_stream_uses_a_comment_without_serializing_another_snapshot(self):
+        initial = {"type": "init", **self.hub.snapshot()}
+        client = queue.Queue(maxsize=100)
+        with patch("orb_monitor.queue.Queue", return_value=client), \
+                patch.object(client, "get", side_effect=[initial, queue.Empty, BrokenPipeError]), \
+                patch.object(self.hub, "_snapshot", wraps=self.hub._snapshot) as snapshot:
+            code, body = self.request("/api/stream")
+        self.assertEqual(code, 200)
+        blocks = body.split(b"\n\n")
+        self.assertEqual(json.loads(blocks[0].removeprefix(b"data: ")), initial)
+        self.assertEqual(blocks[1:], [b": keep-alive", b""])
+        self.assertEqual(snapshot.call_count, 1, "only the initial connection needs full history")
+        self.assertNotIn(client, self.hub.clients)
+
     def test_session_endpoint_selects_past_date_or_today(self):
         code, body = self.request("/api/session?date=2026-10-02")
         self.assertEqual(code, 200)
@@ -331,6 +467,32 @@ class HTTPTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 code, _ = self.request(endpoint, "POST")
                 self.assertIn(code, (404, 405, 501))
+
+    def test_shoonya_help_returns_only_the_login_link(self):
+        expected = "https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id=test-client"
+        with patch("feeds.shoonya_login_url", return_value=expected):
+            code, body = self.request("/api/shoonya/help")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body), {"login_url": expected})
+
+    def test_public_ip_check_is_bounded_and_runs_from_the_monitor_host(self):
+        with patch("orb_monitor.urlopen", return_value=io.BytesIO(b"203.0.113.8\n")) as fetch:
+            code, body = self.request("/api/public-ip")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body), {"ip": "203.0.113.8"})
+        self.assertEqual(fetch.call_args.args[0].full_url, "https://ifconfig.me/ip")
+        self.assertEqual(fetch.call_args.kwargs["timeout"], 3)
+
+    def test_public_ip_failure_keeps_a_manual_recovery_instruction(self):
+        for failure in (URLError("offline"), TimeoutError()):
+            with self.subTest(failure=type(failure)), patch("orb_monitor.urlopen", side_effect=failure):
+                code, body = self.request("/api/public-ip")
+            self.assertEqual(code, 503)
+            self.assertIn("curl -s ifconfig.me", json.loads(body)["message"])
+        with patch("orb_monitor.urlopen", return_value=io.BytesIO(b"<html>service error</html>")):
+            code, body = self.request("/api/public-ip")
+        self.assertEqual(code, 503)
+        self.assertNotIn("<html>", body.decode())
 
 
 if __name__ == "__main__":
