@@ -25,7 +25,7 @@ from signals import IST
 
 NOW = datetime(2026, 10, 8, 10, 5, tzinfo=IST)
 SHOONYA_SYMBOLS = set(TOKEN_SYMBOLS.values())
-SUBSCRIPTIONS = [f"NSE|{token}" for token in TOKEN_SYMBOLS]
+SUBSCRIPTIONS = [f"{exchange}|{token}" for exchange, token in TOKEN_SYMBOLS]
 CREDENTIALS = {"SHOONYA_CLIENT_ID": "client", "SHOONYA_USER_ID": "user",
                "SHOONYA_SECRET_CODE": "secret", "SHOONYA_AUTH_CODE": "auth"}
 
@@ -46,7 +46,10 @@ class Hub:
         self.events = []
         self.ticks = []
         self.tick_symbols = []
+        self.tick_openings = []
         self.histories = []
+        self.live_histories = []
+        self.fallback_histories = []
         self.feed_status = None
 
     def activate_source(self, source):
@@ -58,16 +61,24 @@ class Hub:
             self.events.append(("status", status, error))
             self.condition.notify_all()
 
-    def process_tick(self, *values, symbol=PRIMARY_SYMBOL):
+    def process_tick(self, *values, symbol=PRIMARY_SYMBOL, session_open=None):
         with self.condition:
             self.ticks.append(values)
             self.tick_symbols.append(symbol)
+            self.tick_openings.append(session_open)
             self.condition.notify_all()
 
-    def seed_historical_candles(self, candles, interval_minutes, *, symbol=PRIMARY_SYMBOL):
+    def seed_historical_candles(self, candles, interval_minutes, *, symbol=PRIMARY_SYMBOL, live=False):
         with self.condition:
             self.histories.append((candles, interval_minutes, symbol))
+            self.live_histories.append((symbol, live))
             self.condition.notify_all()
+
+    def seed_fallback_history(self, candles, *, symbol, history_source_id="yahoo"):
+        with self.condition:
+            self.fallback_histories.append((candles, symbol, history_source_id))
+            self.condition.notify_all()
+        return bool(candles)
 
     def snapshot(self):
         return {"source": "test"}
@@ -108,7 +119,7 @@ class FakeApi:
         self.auth_release = None
         self.history_release = None
         self.history_releases = {}
-        self.history_entries = {token: threading.Event() for token in TOKEN_SYMBOLS}
+        self.history_entries = {token: threading.Event() for _, token in TOKEN_SYMBOLS}
         self.history_entered = threading.Event()
         self.auth_entered = threading.Event()
         self.history_requests = []
@@ -154,6 +165,17 @@ class FakeApi:
 
 
 class QuoteContractTests(unittest.TestCase):
+    def test_only_current_generation_primary_history_enables_fresh_alert_recovery(self):
+        hub = Hub()
+        manager = FeedManager(hub)
+        feed = YahooFeed(manager, manager._generation)
+        feed.seed([], PRIMARY_SYMBOL)
+        feed.seed([], "^NSEBANK")
+        self.assertEqual(hub.live_histories, [(PRIMARY_SYMBOL, True), ("^NSEBANK", False)])
+        manager._generation += 1
+        feed.seed([], PRIMARY_SYMBOL)
+        self.assertEqual(len(hub.live_histories), 2, "late history from an old source cannot recover alerts")
+
     def test_backfills_send_only_the_changed_comparison_history(self):
         from orb_monitor import MonitorHub
 
@@ -230,7 +252,7 @@ class QuoteContractTests(unittest.TestCase):
             {"Open": 100, "High": 110, "Low": 90, "Close": 105, "Volume": 12})]))
         for symbol, instrument in INSTRUMENTS.items():
             with self.subTest(symbol=symbol), patch("yfinance.Ticker") as ticker, patch("feeds.datetime", wraps=datetime) as clock:
-                clock.now.return_value = NOW
+                clock.now.return_value = NOW + timedelta(minutes=instrument.yahoo_delay_minutes)
                 ticker.return_value.history.return_value = history
                 candles = fetch_yahoo_5m_history(symbol)
                 ticker.assert_called_once_with(instrument.yahoo_symbol)
@@ -266,6 +288,26 @@ class QuoteContractTests(unittest.TestCase):
         self.assertEqual(quotes.update(frame(lp="101", ft=(NOW + timedelta(seconds=2)).timestamp(), v="7"))[1], 5)
         tomorrow = NOW + timedelta(days=1)
         self.assertEqual(quotes.update(frame(lp="102", ft=tomorrow.timestamp(), v="300"))[1], 0)
+
+    def test_bse_quotes_require_their_own_exchange_and_token(self):
+        quotes = ShoonyaQuotes(now=lambda: NOW, exchange="BSE", token="75")
+        self.assertIsNone(quotes.update(frame(tk="75", lp="999", ft=NOW.timestamp())))
+        self.assertIsNone(quotes.update(frame(e="BSE", lp="999", ft=NOW.timestamp())))
+        self.assertEqual(quotes.update(frame(e="BSE", tk="75", lp="30000", ft=NOW.timestamp(), v="100")),
+                         (30000, 0, NOW))
+        self.assertEqual(quotes.update(frame(e="BSE", tk="75", lp="30010", ft=NOW.timestamp(), v="105")),
+                         (30010, 5, NOW))
+
+    def test_touchline_open_is_retained_across_deltas_without_inventing_tick_times(self):
+        quotes = ShoonyaQuotes(now=lambda: NOW, exchange="BSE", token="75")
+        quotes.update(frame(t="tk", e="BSE", tk="75", lp="30000", o="29000", ft=NOW.timestamp()))
+        self.assertEqual(quotes.session_open, 29000)
+        quotes.update(frame(e="BSE", tk="75", lp="30010", ft=NOW.timestamp()))
+        self.assertEqual(quotes.session_open, 29000)
+        self.assertIsNone(quotes.update(frame(e="BSE", tk="75", o="99999")))
+        self.assertEqual(quotes.session_open, 29000)
+        quotes.update(frame(t="tk", e="BSE", tk="75", lp="30010", o="nan", ft=NOW.timestamp()))
+        self.assertIsNone(quotes.session_open)
 
     def test_feed_timestamp_accepts_epoch_units_but_no_receipt_fallback(self):
         self.assertEqual(feed_timestamp(NOW.timestamp()), NOW)
@@ -414,35 +456,103 @@ class ManagerTests(unittest.TestCase):
 
 
 class ShoonyaLifecycleTests(unittest.TestCase):
+    def test_missing_focit_history_uses_an_explicit_separate_yahoo_backfill(self):
+        rows = {instrument.shoonya_token: [row()] for instrument in INSTRUMENTS.values()}
+        rows["75"] = None
+        requested = []
+
+        def fallback(symbol):
+            requested.append(symbol)
+            return shoonya_history([row()], NOW, symbol=symbol)
+
+        hub, manager = self.launch(FakeApi(rows=rows), fallback_history_fetcher=fallback)
+        self.assertTrue(hub.wait(lambda: bool(hub.fallback_histories)))
+        self.assertEqual(requested, ["FOCIT.BO"])
+        self.assertEqual(hub.fallback_histories[0][1:], ("FOCIT.BO", "yahoo"))
+        self.assertNotIn("FOCIT.BO", [history[2] for history in hub.histories])
+        self.assertTrue(hub.wait(lambda: "FOCIT.BO" in manager._feed.history_fallbacks))
+        self.assertIn("Yahoo history backfill", hub.events[-1][2])
+        self.assertNotIn("FOCIT.BO", manager._feed.cutoff, "fallback cannot reject fresh native quotes")
+
+    def test_slow_fallback_allows_live_focit_quotes_and_cannot_cross_a_source_switch(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def fallback(symbol):
+            entered.set()
+            release.wait(3)
+            finished.set()
+            return shoonya_history([row()], NOW, symbol=symbol)
+
+        hub, manager = self.launch(FakeApi(), fallback_history_fetcher=fallback)
+        self.assertTrue(entered.wait(1))
+        self.assertTrue(hub.wait(lambda: "FOCIT.BO" in manager._feed.ready))
+        manager._feed.api.callbacks["subscribe_callback"](
+            frame(t="tk", e="BSE", tk="75", lp="35000", o="34000", ft=NOW.timestamp()))
+        self.assertTrue(hub.wait(lambda: hub.tick_symbols == ["FOCIT.BO"]))
+        self.assertEqual(hub.tick_openings, [34000])
+        manager.select_source("yahoo")
+        release.set()
+        self.assertTrue(finished.wait(1))
+        self.assertEqual(hub.fallback_histories, [])
+
+    def test_failed_fallback_keeps_the_native_history_warning_and_quotes_available(self):
+        attempted = threading.Event()
+
+        def fallback(symbol):
+            attempted.set()
+            raise RuntimeError("unavailable")
+
+        hub, manager = self.launch(FakeApi(), fallback_history_fetcher=fallback)
+        self.assertTrue(attempted.wait(1))
+        self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
+        self.assertEqual(hub.fallback_histories, [])
+        self.assertIn("FOCIT", manager._feed.history_errors.values())
+        self.assertEqual(manager._feed.history_fallbacks, {})
+
+    def test_focit_live_open_and_ticks_work_without_provider_history(self):
+        api = FakeApi()
+        hub, manager = self.launch(api)
+        self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
+        callback = api.callbacks["subscribe_callback"]
+        callback(frame(t="tk", e="BSE", tk="75", lp="35000", o="34000", ft=NOW.timestamp()))
+        callback(frame(e="BSE", tk="75", lp="35010", ft=(NOW + timedelta(seconds=1)).timestamp()))
+        self.assertTrue(hub.wait(lambda: len(hub.ticks) == 2))
+        self.assertEqual(hub.tick_symbols, ["FOCIT.BO", "FOCIT.BO"])
+        self.assertEqual(hub.tick_openings, [34000, 34000])
+        self.assertEqual(hub.histories, [])
+
     def test_all_registered_indices_route_independently(self):
         api = FakeApi(rows=[row()])
         hub, manager = self.launch(api)
         self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
         self.assertEqual(api.subscriptions, [SUBSCRIPTIONS])
-        self.assertEqual({request["token"] for request in api.history_requests}, set(TOKEN_SYMBOLS))
+        self.assertEqual({(request["exchange"], request["token"]) for request in api.history_requests}, set(TOKEN_SYMBOLS))
         self.assertEqual({item[2] for item in hub.histories}, SHOONYA_SYMBOLS)
         self.assertEqual(manager._feed.history_errors, {})
         self.assertEqual(set(manager._feed.cutoff), set(INSTRUMENTS))
         callback = api.callbacks["subscribe_callback"]
         expected = {}
-        for index, (token, symbol) in enumerate(TOKEN_SYMBOLS.items()):
+        for index, ((exchange, token), symbol) in enumerate(TOKEN_SYMBOLS.items()):
             price = 100 + index * 100
             timestamp = NOW + timedelta(seconds=index + 1)
-            callback(frame(t="tk", tk=token, lp=str(price), ft=timestamp.timestamp(), v="100"))
-            callback(frame(tk=token, lp=str(price + 1), ft=timestamp.timestamp(), v=str(101 + index)))
+            callback(frame(t="tk", e=exchange, tk=token, lp=str(price), ft=timestamp.timestamp(), v="100"))
+            callback(frame(e=exchange, tk=token, lp=str(price + 1), ft=timestamp.timestamp(), v=str(101 + index)))
             expected[symbol] = [(price, 0), (price + 1, 1 + index)]
         for token in (None, "None", "unregistered"):
             callback(frame(tk=token, lp="999", ft=NOW.timestamp()))
+        callback(frame(tk="75", lp="999", ft=NOW.timestamp()))
         self.assertTrue(hub.wait(lambda: len(hub.ticks) == 2 * len(TOKEN_SYMBOLS)))
         self.assertEqual({symbol: [tick[:2] for tick, routed in zip(hub.ticks, hub.tick_symbols)
                                   if routed == symbol] for symbol in SHOONYA_SYMBOLS}, expected)
 
-    def launch(self, api, credentials=CREDENTIALS):
+    def launch(self, api, credentials=CREDENTIALS, *, fallback_history_fetcher=lambda symbol: []):
         hub = Hub()
         manager = FeedManager(hub, yahoo_factory=DummyFeed,
                               shoonya_factory=lambda manager, generation: ShoonyaFeed(
                                   manager, generation, api_factory=lambda: api,
-                                  credentials=credentials, now=lambda: NOW))
+                                  credentials=credentials, now=lambda: NOW,
+                                  fallback_history_fetcher=fallback_history_fetcher))
         self.addCleanup(manager.stop)
         manager.select_source("shoonya")
         return hub, manager
@@ -455,7 +565,7 @@ class ShoonyaLifecycleTests(unittest.TestCase):
                                           "client_id": "client", "UID": "user"})
         self.assertEqual(api.subscriptions, [SUBSCRIPTIONS])
         self.assertTrue(all(event.wait(1) for event in api.history_entries.values()))
-        self.assertEqual({request["token"] for request in api.history_requests}, set(TOKEN_SYMBOLS))
+        self.assertEqual({(request["exchange"], request["token"]) for request in api.history_requests}, set(TOKEN_SYMBOLS))
         self.assertTrue(all(request["interval"] == 5 for request in api.history_requests))
         self.assertEqual(api.start_calls, 1)
         api.callbacks["subscribe_callback"](frame(lp="100", ft=NOW.timestamp()))
@@ -611,7 +721,8 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         manager = FeedManager(hub, yahoo_factory=DummyFeed,
                               shoonya_factory=lambda manager, generation: ShoonyaFeed(
                                   manager, generation, api_factory=lambda: api,
-                                  credentials=CREDENTIALS, now=lambda: clock["now"]))
+                                  credentials=CREDENTIALS, now=lambda: clock["now"],
+                                  fallback_history_fetcher=lambda symbol: []))
         self.addCleanup(manager.stop)
         manager.select_source("shoonya")
         self.assertTrue(api.history_entered.wait(1))
@@ -684,7 +795,8 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         manager = FeedManager(hub, yahoo_factory=DummyFeed,
                               shoonya_factory=lambda manager, generation: ShoonyaFeed(
                                   manager, generation, api_factory=lambda: next(available),
-                                  credentials=credentials, now=lambda: clock["now"]))
+                                  credentials=credentials, now=lambda: clock["now"],
+                                  fallback_history_fetcher=lambda symbol: []))
         self.addCleanup(manager.stop)
         manager.select_source("shoonya")
         self.assertTrue(hub.wait(lambda: hub.feed_status == "live"))
@@ -798,6 +910,17 @@ class FakeYahooSocket:
 
 
 class YahooLifecycleTests(unittest.TestCase):
+    def test_delayed_quotes_cross_history_cutoff_in_provider_time(self):
+        hub, manager, socket = self.launch(lambda symbol: shoonya_history([row()], NOW, symbol=symbol))
+        self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
+        delayed_time = NOW - timedelta(minutes=15)
+        socket.callback({"id": "FOCIT.BO", "price": 30000, "time": delayed_time.timestamp() * 1000})
+        socket.callback({"id": "FOCIT.BO", "price": 30010,
+                         "time": (delayed_time + timedelta(seconds=1)).timestamp() * 1000})
+        self.assertTrue(hub.wait(lambda: len(hub.ticks) == 1))
+        self.assertEqual(hub.tick_symbols, ["FOCIT.BO"])
+        self.assertEqual(hub.ticks[0], (30010, 0, delayed_time + timedelta(seconds=1)))
+
     def test_switch_cancels_pending_dial_and_closes_late_connection_before_replacement(self):
         hub = Hub()
 
@@ -979,7 +1102,9 @@ class YahooLifecycleTests(unittest.TestCase):
         self.assertEqual(set(zip(hub.tick_symbols, (tick[:2] for tick in hub.ticks))),
                          {("^NSEI", (106, 2)), ("^NSEBANK", (200, 4))})
         self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
-        self.assertEqual(manager._feed.cutoff, {symbol: clock["now"] for symbol in INSTRUMENTS if symbol != "^NSEBANK"})
+        self.assertEqual(manager._feed.cutoff, {
+            symbol: clock["now"] - timedelta(minutes=instrument.yahoo_delay_minutes)
+            for symbol, instrument in INSTRUMENTS.items() if symbol != "^NSEBANK"})
         self.assertEqual(hub.histories[0][0][0].close, 105)
 
     def test_slow_bank_backfill_does_not_delay_primary_or_leak_after_switch(self):

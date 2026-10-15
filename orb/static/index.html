@@ -28,18 +28,14 @@
     <div class="chart-toolbar">
         <span id="replay-progress" role="status" hidden></span>
         <span id="range">ORB 09:15–09:45 IST</span>
+        <button id="comparison-toggle" aria-pressed="true" title="Show or hide derivatives. Their breakouts use 5m closes outside the first 45m closing range.">Derivatives</button>
         <div class="interval-control" role="group" aria-label="Candle interval"><button id="interval-15m" aria-pressed="true">15m</button><button id="interval-5m" aria-pressed="false">5m</button></div>
         <button id="replay" class="icon-button" aria-label="Replay this session" aria-pressed="false" title="Candle-based replay: illustrative OHLC progression, including confirmed signals. Live quotes keep collecting." disabled><svg class="play-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6Z"/></svg><svg class="stop-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="1"/></svg></button>
     </div>
-    <div id="comparison-summary" class="comparison-row" aria-label="Index returns since the session open">
-      <span id="primary-return">NIFTY 50 —</span>
-      <button id="comparison-toggle" aria-pressed="true" title="Show or hide all NIFTY comparison lines. Every index uses its 09:15 session open.">NIFTY</button>
-      <span id="comparison-return" aria-label="Comparison index returns">Indices unavailable</span>
-      <span class="comparison-baseline" title="All lines use the same percentage scale from their session open; the right axis shows equivalent NIFTY 50 prices.">from 09:15</span>
-    </div>
     <div id="chart-wrap" tabindex="0" role="region" aria-label="15-minute candlestick chart. Press left arrow for an earlier session or right arrow for a later session.">
-      <div id="chart-inspector"><span id="ohlc">Move over a candle to inspect</span><div id="comparison-detail"></div></div>
       <canvas id="chart" role="img" aria-label="NIFTY 50 session chart"></canvas>
+      <div id="series-labels" aria-label="Index returns and confirmed breakouts"></div>
+      <span id="ohlc" class="sr-only"></span>
       <div id="empty-state" role="status"></div>
     </div>
   </main>

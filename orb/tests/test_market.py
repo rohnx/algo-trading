@@ -12,11 +12,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from market import INSTRUMENTS, PRIMARY_SYMBOL, InstrumentState
+from market import INSTRUMENTS, PRIMARY_SYMBOL, InstrumentState, history_cutoff, prune_session_files
 from orb_monitor import MonitorHub
 from test_features import Clock, at, bar
 
 BANK = "^NSEBANK"
+FOCIT = "FOCIT.BO"
 
 
 def bank_bar(slot=0, interval=5, **kwargs):
@@ -30,21 +31,25 @@ class InstrumentTests(unittest.TestCase):
 
     def test_registry_and_full_snapshot_contract(self):
         self.assertEqual(PRIMARY_SYMBOL, "^NSEI")
-        self.assertEqual([(item.label, item.shoonya_token) for item in INSTRUMENTS.values()],
-                         [("NIFTY 50", "26000"), ("BANKNIFTY", "26009"),
-                          ("MIDCAP SELECT", "26074"), ("NIFTY NEXT 50", "26013"), ("FIN NIFTY", "26037")])
+        self.assertEqual([(item.label, item.shoonya_exchange, item.shoonya_token) for item in INSTRUMENTS.values()],
+                         [("NIFTY 50", "NSE", "26000"), ("BANKNIFTY", "NSE", "26009"),
+                          ("MIDCAP SELECT", "NSE", "26074"), ("NIFTY NEXT 50", "NSE", "26013"),
+                          ("FIN NIFTY", "NSE", "26037"), ("FOCIT", "BSE", "75")])
         self.assertEqual([item.yahoo_symbol for item in INSTRUMENTS.values()],
-                         ["^NSEI", "^NSEBANK", "NIFTY_MID_SELECT.NS", "^NSMIDCP", "NIFTY_FIN_SERVICE.NS"])
+                         ["^NSEI", "^NSEBANK", "NIFTY_MID_SELECT.NS", "^NSMIDCP", "NIFTY_FIN_SERVICE.NS", "FOCIT.BO"])
         state = self.hub.snapshot()
         self.assertEqual(state["primary_symbol"], PRIMARY_SYMBOL)
         self.assertEqual(set(state["instruments"]), set(INSTRUMENTS))
         for symbol, instrument in state["instruments"].items():
             self.assertEqual(instrument["symbol"], symbol)
+            self.assertEqual(instrument["quote_delay_seconds"], 900 if symbol == FOCIT else 0)
             self.assertEqual(instrument["comparison_status"], "unavailable")
             self.assertIsNone(instrument["session_open"])
             self.assertIsNone(instrument["change_pct"])
 
     def test_all_indices_have_independent_open_return_freshness_and_bars(self):
+        self.hub.activate_source("shoonya")
+        self.hub.set_feed_status("live")
         for index, symbol in enumerate(INSTRUMENTS):
             opening = 100 * (index + 1)
             candles = [replace(bar(slot, 5, price=opening), symbol=symbol) for slot in range(9)]
@@ -105,6 +110,8 @@ class InstrumentTests(unittest.TestCase):
             with self.subTest(symbol=symbol):
                 self.clock.value = at(10, 12)
                 hub = MonitorHub(now=self.clock)
+                hub.activate_source("shoonya")
+                hub.set_feed_status("live")
                 history = [replace(bar(slot, 5, price=500), symbol=symbol) for slot in range(12)]
                 history[-1] = replace(history[-1], open=500, high=515, low=490, close=512, volume=17)
                 hub.seed_historical_candles(history, 5, symbol=symbol)
@@ -181,6 +188,7 @@ class InstrumentTests(unittest.TestCase):
         self.assertFalse(self.hub.process_tick(999, tick_time=at(10, 4), symbol=BANK))
 
     def test_comparator_history_does_not_rebuild_primary_strategies(self):
+        self.clock.value = at(10, 15)
         self.hub.seed_historical_candles([bar(slot, 5) for slot in range(9)], 5)
         before = self.hub.snapshot()
         for symbol in INSTRUMENTS:
@@ -219,6 +227,7 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(set(client.queue[-1]["instruments"]), set(INSTRUMENTS))
 
     def test_provider_and_instrument_caches_restore_without_cross_contamination(self):
+        self.clock.value = at(10, 15)
         with tempfile.TemporaryDirectory() as directory:
             hub = MonitorHub(now=self.clock, cache_dir=directory)
             for source, offset in (("yahoo", 0), ("shoonya", 1000)):
@@ -240,6 +249,7 @@ class InstrumentTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "yahoo" / "NSEBANK" / "5m" / "2026-10-05.json").exists())
 
     def test_revisiting_sources_reuses_history_without_rewriting_past_sessions(self):
+        self.clock.value = at(10, 15)
         with tempfile.TemporaryDirectory() as directory:
             hub = MonitorHub(now=self.clock, cache_dir=directory)
             expected = {}
@@ -333,6 +343,7 @@ class InstrumentTests(unittest.TestCase):
         self.assertEqual(state["comparison_status"], "unavailable")
 
     def test_inactive_source_revisited_on_new_date_keeps_history_and_clears_live(self):
+        self.clock.value = at(10, 15)
         for source, offset in (("yahoo", 0), ("shoonya", 1000)):
             if source != "yahoo":
                 self.hub.activate_source(source)
@@ -429,6 +440,235 @@ class InstrumentTests(unittest.TestCase):
                 self.assertEqual(state["session_open"], 500)
                 self.assertIsNone(state["change_pct"])
                 self.assertEqual(state["comparison_status"], "unavailable")
+
+
+class DelayedInstrumentTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(at(10, 12))
+        self.state = InstrumentState(INSTRUMENTS[FOCIT], now=self.clock)
+
+    def history(self, count=9):
+        return [replace(bar(slot, 5, price=500), symbol=FOCIT) for slot in range(count)]
+
+    def snapshot(self, feed_status="live"):
+        return self.state.snapshot(self.clock(), feed_status)
+
+    def test_delayed_history_uses_source_clock_for_active_bars_and_coverage(self):
+        self.state.seed_historical_candles(self.history(), 5)
+        result = self.snapshot()
+        self.assertEqual(self.state.quote_delay, timedelta(minutes=15))
+        self.assertEqual(self.state.market_time(), at(9, 57))
+        self.assertEqual(len(result["candles_5m"]), 8)
+        self.assertEqual(len(result["candles"]), 2)
+        self.assertEqual(result["active_candle_5m"]["start_time"], at(9, 55).isoformat())
+        self.assertEqual(result["active_candle"]["start_time"], at(9, 45).isoformat())
+        self.assertFalse(result["active_candle_5m"]["is_closed"])
+        self.assertTrue(result["active_candle"]["is_complete"])
+        self.assertEqual(result["history_coverage_time"], at(9, 57).isoformat())
+        self.assertEqual(result["session_open"], 500)
+        self.assertEqual(result["quote_delay_seconds"], 900)
+        self.assertEqual(result["comparison_status"], "stale")
+        self.assertIsNone(result["last_tick_time"])
+
+    def test_delayed_quote_remains_in_its_native_bar_and_closes_at_delayed_boundary(self):
+        self.state.seed_historical_candles(self.history(), 5)
+        self.assertTrue(self.state.process_tick(520, tick_time=at(9, 57)))
+        self.state._close_elapsed(self.state.market_time())
+        self.assertEqual(self.state.active_candle_5m.start_time, at(9, 55))
+        for quote_time in (at(9, 58, 15), at(9, 59, 30), at(9, 59, 59)):
+            self.clock.value = quote_time + timedelta(minutes=15)
+            self.assertTrue(self.state.process_tick(522, tick_time=quote_time))
+        self.assertEqual(self.state.active_candle_5m.end_time, at(10, 0))
+        self.clock.value = at(10, 15)
+        closed = self.state._close_elapsed(self.state.market_time())
+        self.assertEqual({interval for interval, _ in closed}, {5, 15})
+        self.assertTrue(all(candle.close_is_valid for _, candle in closed))
+        self.assertEqual(self.state.candles_5m[-1].close, 522)
+        self.assertEqual(len(self.state.candles_5m), 9)
+
+    def test_delayed_freshness_does_not_make_repeated_old_quotes_fresh(self):
+        self.state.seed_historical_candles(self.history(), 5)
+        self.assertTrue(self.state.process_tick(525, tick_time=at(9, 57)))
+        result = self.snapshot()
+        self.assertEqual(result["comparison_status"], "delayed")
+        self.assertEqual(result["last_tick_time"], at(9, 57).isoformat())
+        self.assertAlmostEqual(result["change_pct"], 5)
+        self.assertEqual(self.snapshot("disconnected")["comparison_status"], "stale")
+        self.clock.value = at(10, 13, 30)
+        self.assertEqual(self.snapshot()["comparison_status"], "delayed")
+        self.clock.value += timedelta(seconds=1)
+        self.assertTrue(self.state.process_tick(525, tick_time=at(9, 57)))
+        self.assertEqual(self.snapshot()["comparison_status"], "stale")
+        self.assertIsNone(self.snapshot()["change_pct"])
+        self.assertFalse(self.state.process_tick(526, tick_time=at(10, 13)))
+
+    def test_delayed_source_is_open_until_its_last_quote_window_ends(self):
+        self.clock.value = at(15, 30)
+        self.assertTrue(self.state.set_session_open(500, at(15, 15)))
+        self.state.seed_historical_candles(self.history(75), 5)
+        self.assertTrue(self.state.process_tick(525, tick_time=at(15, 15)))
+        self.assertEqual(self.snapshot()["comparison_status"], "delayed")
+        self.clock.value = at(15, 44, 59)
+        self.state.seed_historical_candles(self.history(75), 5)
+        self.assertTrue(self.state.process_tick(530, tick_time=at(15, 29, 59)))
+        self.assertEqual(self.snapshot()["comparison_status"], "delayed")
+        self.clock.value = at(15, 45)
+        self.state._close_elapsed(self.state.market_time())
+        self.assertEqual(self.snapshot()["comparison_status"], "closed")
+        self.assertFalse(self.state.process_tick(531, tick_time=at(15, 30)))
+
+    def test_source_switch_removes_delay_without_carrying_quotes_or_baseline(self):
+        self.assertTrue(self.state.set_session_open(500, at(9, 57)))
+        self.assertTrue(self.state.process_tick(525, tick_time=at(9, 57)))
+        self.state.activate_source("shoonya")
+        self.assertEqual(self.state.quote_delay, timedelta(0))
+        self.assertEqual(self.state.market_time(), at(10, 12))
+        self.assertEqual(self.snapshot()["quote_delay_seconds"], 0)
+        self.assertIsNone(self.state.current_price)
+        self.assertIsNone(self.state.session_open)
+        self.assertTrue(self.state.set_session_open(600, at(10, 12)))
+        self.assertTrue(self.state.process_tick(630, tick_time=at(10, 12)))
+        self.assertEqual(self.snapshot()["comparison_status"], "live")
+        self.assertAlmostEqual(self.snapshot()["change_pct"], 5)
+        self.state.activate_source("yahoo")
+        self.assertEqual(self.state.quote_delay, timedelta(minutes=15))
+        self.assertIsNone(self.state.current_price)
+        self.assertEqual(self.state.session_open, 500)
+
+    def test_upstream_open_requires_fresh_same_session_metadata_and_creates_no_bar(self):
+        for opening, timestamp in ((0, at(9, 57)), (float("nan"), at(9, 57)),
+                                   (500, at(9, 55)), (500, at(9, 57, 1)),
+                                   (500, at(9, 57, day="2026-10-02")), (500, at(9, 14))):
+            with self.subTest(opening=opening, timestamp=timestamp):
+                self.assertFalse(self.state.set_session_open(opening, timestamp))
+        self.assertTrue(self.state.set_session_open(500, at(9, 57)))
+        self.assertFalse(self.state.set_session_open(999, at(9, 57)))
+        self.assertEqual(self.state.session_open, 500)
+        self.assertIsNone(self.state.active_candle)
+        self.assertIsNone(self.state.active_candle_5m)
+        self.assertEqual(self.state.candles, [])
+        self.assertIsNone(self.state.current_price)
+
+    def test_retention_and_session_date_use_actual_day_at_midnight(self):
+        self.clock.value = at(0, 5, day="2026-10-13")
+        state = InstrumentState(INSTRUMENTS[FOCIT], now=self.clock)
+        self.assertEqual(state.date, "2026-10-13")
+        self.assertEqual(state.market_time().date().isoformat(), "2026-10-12")
+        old = replace(bar(0, 5, day="2026-08-13"), symbol=FOCIT)
+        retained = replace(old, start_time=at(day="2026-08-14"), end_time=at(9, 20, day="2026-08-14"))
+        state.seed_historical_candles([old, retained], 5)
+        self.assertNotIn("2026-08-13", state.sessions_5m)
+        self.assertIn("2026-08-14", state.sessions_5m)
+        self.assertEqual(state.date, "2026-10-13")
+
+
+class SessionOpenPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(at(13, 40))
+
+    def state(self, cache_root=None, source="shoonya", symbol=FOCIT):
+        state = InstrumentState(INSTRUMENTS[symbol], now=self.clock, cache_root=cache_root)
+        state.activate_source(source)
+        return state
+
+    def capture_midday_bar(self, state, opening=500):
+        self.assertTrue(state.process_tick(525, tick_time=state.market_time()))
+        self.assertTrue(state.set_session_open(opening, state.market_time()))
+        for minute, second in ((41, 0), (42, 0), (43, 0), (44, 0), (44, 59)):
+            self.clock.value = at(13, minute, second)
+            self.assertTrue(state.process_tick(526, tick_time=state.market_time()))
+        self.clock.value = at(13, 45)
+        state._close_elapsed(state.market_time())
+
+    def test_midday_open_survives_restart_and_historical_view_without_fake_opening_candle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.state(directory)
+            self.capture_midday_bar(state)
+            path = Path(directory) / "shoonya" / "FOCIT.BO" / "opens" / "2026-10-05.json"
+            metadata = json.loads(path.read_text())
+            self.assertEqual(metadata["session_open"], 500)
+            self.assertEqual(metadata["symbol"], FOCIT)
+            self.assertEqual(metadata["source_id"], "shoonya")
+            restored = self.state(directory)
+            self.assertEqual(restored.session_open, 500)
+            self.assertTrue(all(c.start_time >= at(13, 40) for c in restored.candles_5m))
+            self.assertEqual(len(restored.candles_5m), 1)
+            self.clock.value = at(10, 0, day="2026-10-06")
+            restored = self.state(directory)
+            past = restored.snapshot(self.clock(), "live", "2026-10-05")
+            self.assertEqual(past["session_open"], 500)
+            self.assertEqual(past["current_price"], 526)
+            self.assertAlmostEqual(past["change_pct"], 5.2)
+            self.assertEqual(past["comparison_status"], "closed")
+            self.assertIsNone(restored.session_open)
+
+    def test_baselines_follow_provider_and_symbol_in_memory_and_on_disk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.state(directory, source="yahoo")
+            self.assertTrue(state.set_session_open(500, state.market_time()))
+            state.activate_source("shoonya")
+            self.assertIsNone(state.session_open)
+            self.assertTrue(state.set_session_open(600, state.market_time()))
+            state.activate_source("yahoo")
+            self.assertEqual(state.session_open, 500)
+            state.activate_source("shoonya")
+            self.assertEqual(state.session_open, 600)
+            bank = self.state(directory, symbol=BANK)
+            self.assertIsNone(bank.session_open)
+            self.assertTrue(bank.set_session_open(700, bank.market_time()))
+            for source, opening in (("yahoo", 500), ("shoonya", 600)):
+                self.assertEqual(self.state(directory, source=source).session_open, opening)
+            self.assertEqual(self.state(directory, symbol=BANK).session_open, 700)
+        state = self.state()
+        self.assertTrue(state.set_session_open(800, state.market_time()))
+        state.reset("2026-10-06")
+        self.assertIsNone(state.session_open)
+        self.assertEqual(state.snapshot(self.clock(), "live", "2026-10-05")["session_open"], 800)
+
+    def test_native_opening_candle_overrides_reported_baseline_after_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.state(directory)
+            self.assertTrue(state.set_session_open(500, state.market_time()))
+            state.seed_historical_candles([replace(bar(0, 5, price=600), symbol=FOCIT)], 5)
+            self.assertEqual(state.session_open, 600)
+            self.assertEqual(self.state(directory).session_open, 600)
+            self.clock.value = at(10, 0, day="2026-10-06")
+            restored = self.state(directory)
+            self.assertEqual(restored.snapshot(self.clock(), "live", "2026-10-05")["session_open"], 600)
+
+    def test_opening_is_saved_only_once_after_validated_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.state(directory)
+            with patch.object(Path, "write_text", autospec=True, wraps=Path.write_text) as write:
+                self.assertFalse(state.set_session_open(-1, state.market_time()))
+                self.assertTrue(state.set_session_open(500, state.market_time()))
+                self.assertFalse(state.set_session_open(501, state.market_time()))
+                self.assertTrue(state.process_tick(525, tick_time=state.market_time()))
+                self.assertEqual(write.call_count, 1)
+
+    def test_native_fifteen_minute_open_wins_when_five_minute_open_is_missing(self):
+        state = self.state()
+        self.assertTrue(state.set_session_open(500, state.market_time()))
+        state.seed_historical_candles([replace(bar(0, 15, price=600), symbol=FOCIT)], 15)
+        late = replace(bar(53, 5, price=700), symbol=FOCIT)
+        state.seed_historical_candles([late], 5)
+        self.assertEqual(state.session_open, 600)
+
+    def test_reported_openings_share_actual_day_retention_across_providers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for source in ("yahoo", "shoonya"):
+                for day in ("2026-08-13", "2026-08-14"):
+                    self.clock.value = at(13, 40, day=day)
+                    state = self.state(directory, source=source)
+                    self.assertTrue(state.set_session_open(500, state.market_time()))
+            self.clock.value = at(0, 5, day="2026-10-13")
+            restored = self.state(directory, source="yahoo")
+            restored.activate_source("shoonya")
+            self.assertEqual(set(restored.session_opens), {"2026-08-14"})
+            state.prune_history(history_cutoff(self.clock()))
+            self.assertTrue(all("2026-08-13" not in values for values in state._source_opens.values()))
+            prune_session_files(directory, history_cutoff(self.clock()))
+            self.assertEqual({p.stem for p in Path(directory).rglob("opens/*.json")}, {"2026-08-14"})
 
 
 if __name__ == "__main__":

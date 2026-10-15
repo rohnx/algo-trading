@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from signals import Candle, IST
 from market import INSTRUMENTS, PRIMARY_SYMBOL
 
-TOKEN_SYMBOLS = {str(instrument.shoonya_token): symbol
+TOKEN_SYMBOLS = {(instrument.shoonya_exchange, str(instrument.shoonya_token)): symbol
                  for symbol, instrument in INSTRUMENTS.items()}
 YAHOO_SYMBOLS = {instrument.yahoo_symbol: symbol for symbol, instrument in INSTRUMENTS.items()}
 QUEUE_SIZE = 4096
@@ -71,16 +71,18 @@ def _volume(value):
 class ShoonyaQuotes:
     """Track touchline volume without inventing a price event timestamp."""
 
-    def __init__(self, now=None, *, token=None):
+    def __init__(self, now=None, *, token=None, exchange="NSE"):
         self.token = str(token or INSTRUMENTS[PRIMARY_SYMBOL].shoonya_token)
+        self.exchange = exchange
         self.cumulative = None
         self.pending_volume = 0
         self.last_time = None
+        self.session_open = None
         self.now = now
 
     def update(self, message):
         if (not isinstance(message, dict) or message.get("t") not in ("tk", "tf")
-                or str(message.get("e")) != "NSE"
+                or str(message.get("e")) != self.exchange
                 or str(message.get("tk")) != self.token):
             return None
         timestamp = None
@@ -94,9 +96,11 @@ class ShoonyaQuotes:
             if timestamp and self.last_time and timestamp.date() != self.last_time.date():
                 self.cumulative = None
                 self.pending_volume = 0
+                self.session_open = None
             if message["t"] == "tk":
                 self.cumulative = None
                 self.pending_volume = 0
+                self.session_open = None
             if "v" in message:
                 cumulative = _volume(message["v"])
                 if self.cumulative is not None and cumulative >= self.cumulative:
@@ -115,6 +119,12 @@ class ShoonyaQuotes:
         except (TypeError, ValueError, OverflowError, OSError):
             return None
         self.last_time = timestamp
+        try:
+            opening = float(message.get("o", self.session_open))
+            if math.isfinite(opening) and opening > 0:
+                self.session_open = opening
+        except (TypeError, ValueError, OverflowError):
+            pass
         volume, self.pending_volume = self.pending_volume, 0
         return price, volume, timestamp
 
@@ -164,7 +174,7 @@ def shoonya_history(rows, now=None, *, symbol=PRIMARY_SYMBOL):
 def fetch_yahoo_5m_history(symbol=PRIMARY_SYMBOL):
     import yfinance as yf
     history = yf.Ticker(INSTRUMENTS[symbol].yahoo_symbol).history(period="60d", interval="5m")
-    now = datetime.now(IST)
+    now = datetime.now(IST) - timedelta(minutes=INSTRUMENTS[symbol].yahoo_delay_minutes)
     candles = []
     for timestamp, row in history.iterrows():
         try:
@@ -370,19 +380,34 @@ class _Feed:
     def seed(self, candles, symbol):
         def action():
             hub = self.manager.hub
-            hub.seed_historical_candles(candles, interval_minutes=5, symbol=symbol)
+            hub.seed_historical_candles(candles, interval_minutes=5, symbol=symbol,
+                                        live=symbol == PRIMARY_SYMBOL)
             if symbol == PRIMARY_SYMBOL:
                 hub.broadcast({"type": "init", **hub.snapshot()})
             else:
                 hub.broadcast({"type": "state", **hub._instrument_event(symbol)})
         self.apply(action)
 
-    def tick(self, values, symbol):
-        self.apply(lambda: self.manager.hub.process_tick(*values, symbol=symbol))
+    def seed_fallback(self, candles, symbol):
+        seeded = False
+        def action():
+            nonlocal seeded
+            hub = self.manager.hub
+            seeded = hub.seed_fallback_history(candles, symbol=symbol, history_source_id="yahoo")
+            if seeded:
+                hub.broadcast({"type": "state", **hub._instrument_event(symbol)})
+        self.apply(action)
+        return seeded
 
-    def _acquire_history(self, connection, symbol):
+    def tick(self, values, symbol, *, session_open=None):
+        fields = {"symbol": symbol}
+        if session_open is not None:
+            fields["session_open"] = session_open
+        self.apply(lambda: self.manager.hub.process_tick(*values, **fields))
+
+    def _acquire_history(self, connection, symbol, *, source=None):
         # A returning connection waits for old work, while stopped waiters exit promptly.
-        lock = self.history_locks[symbol]
+        lock = (self.manager._history_locks[source] if source else self.history_locks)[symbol]
         while self._is_connected(connection):
             if lock.acquire(timeout=0.1):
                 if self._is_connected(connection):
@@ -468,7 +493,7 @@ class YahooFeed(_Feed):
         candles = None
         try:
             candles = self.history_fetcher(symbol)
-            cutoff = self.now()
+            cutoff = self.now() - timedelta(minutes=INSTRUMENTS[symbol].yahoo_delay_minutes)
         except Exception:
             pass
         finally:
@@ -557,11 +582,13 @@ def _clear_queue(incoming):
 
 
 class ShoonyaFeed(_Feed):
-    def __init__(self, manager, generation, *, api_factory=None, credentials=None, now=None):
+    def __init__(self, manager, generation, *, api_factory=None, credentials=None, now=None,
+                 fallback_history_fetcher=None):
         super().__init__(manager, generation, source="shoonya")
         self.api_factory = api_factory or _shoonya_api
         self.credentials = credentials
         self.now = now or (lambda: datetime.now(IST))
+        self.fallback_history_fetcher = fallback_history_fetcher or fetch_yahoo_5m_history
         self.api = None
         self.controls = deque(maxlen=32)
         self.callback_lock = threading.Lock()
@@ -573,6 +600,7 @@ class ShoonyaFeed(_Feed):
         self.quotes = {}
         self.cutoff = {}
         self.history_errors = {}
+        self.history_fallbacks = {}
 
     def start(self):
         self.status("connecting")
@@ -612,8 +640,8 @@ class ShoonyaFeed(_Feed):
     def _on_tick(self, message):
         if not isinstance(message, dict):
             return
-        symbol = TOKEN_SYMBOLS.get(str(message.get("tk")))
-        if symbol is None or message.get("e") != "NSE":
+        symbol = TOKEN_SYMBOLS.get((str(message.get("e")), str(message.get("tk"))))
+        if symbol is None:
             return
         with self.callback_lock:
             if self.stopped.is_set() or not self.connected:
@@ -639,7 +667,8 @@ class ShoonyaFeed(_Feed):
         try:
             cutoff = self.now()
             rows = self.api.get_time_price_series(
-                exchange="NSE", token=str(INSTRUMENTS[symbol].shoonya_token),
+                exchange=INSTRUMENTS[symbol].shoonya_exchange,
+                token=str(INSTRUMENTS[symbol].shoonya_token),
                 starttime=(cutoff - timedelta(days=60)).replace(hour=0, minute=0, second=0,
                                                             microsecond=0).timestamp(),
                 endtime=cutoff.timestamp(), interval=5)
@@ -653,6 +682,34 @@ class ShoonyaFeed(_Feed):
                 return
             self.controls.append(("history", connection, (symbol, candles, cutoff)))
         self.wake.set()
+        if not candles and INSTRUMENTS[symbol].shoonya_history_fallback == "yahoo":
+            fallback_lock = self._acquire_history(connection, symbol, source="yahoo")
+            if fallback_lock is None:
+                return
+            fallback = None
+            try:
+                fallback = self.fallback_history_fetcher(symbol)
+            except Exception:
+                pass
+            finally:
+                fallback_lock.release()
+            with self.callback_lock:
+                if self.stopped.is_set() or connection != self.connection:
+                    return
+                self.controls.append(("fallback", connection, (symbol, fallback)))
+            self.wake.set()
+
+    def _history_status(self):
+        if PRIMARY_SYMBOL not in self.ready:
+            return
+        notes = []
+        if self.history_errors:
+            missing = ", ".join(self.history_errors.values())
+            notes.append(f"Shoonya 5-minute history unavailable: {missing}")
+        if self.history_fallbacks:
+            names = ", ".join(self.history_fallbacks.values())
+            notes.append(f"{names}: Yahoo history backfill; Shoonya quotes")
+        self.status("live", " · ".join(notes) if notes else None)
 
     def _control(self, kind, connection, detail):
         with self.callback_lock:
@@ -660,10 +717,12 @@ class ShoonyaFeed(_Feed):
                 return
         if kind == "open":
             self.ready.clear()
-            self.quotes = {symbol: ShoonyaQuotes(now=self.now, token=instrument.shoonya_token)
+            self.quotes = {symbol: ShoonyaQuotes(now=self.now, token=instrument.shoonya_token,
+                                               exchange=instrument.shoonya_exchange)
                            for symbol, instrument in INSTRUMENTS.items()}
             self.cutoff.clear()
             self.history_errors.clear()
+            self.history_fallbacks.clear()
             for incoming in self.incoming.values():
                 _clear_queue(incoming)
             self.status("connecting")
@@ -671,7 +730,7 @@ class ShoonyaFeed(_Feed):
                 with self.socket_lock:
                     if not self._is_connected(connection):
                         return
-                    self.api.subscribe([f"NSE|{token}" for token in TOKEN_SYMBOLS])
+                    self.api.subscribe([f"{exchange}|{token}" for exchange, token in TOKEN_SYMBOLS])
                 for symbol in INSTRUMENTS:
                     threading.Thread(target=self._refresh_history, args=(connection, symbol), daemon=True,
                                      name=f"shoonya-history-{symbol}").start()
@@ -689,10 +748,15 @@ class ShoonyaFeed(_Feed):
             else:
                 self.history_errors[symbol] = INSTRUMENTS[symbol].label
             self.ready[symbol] = connection
-            if PRIMARY_SYMBOL in self.ready:
-                missing = ", ".join(self.history_errors.values())
-                note = f"Shoonya 5-minute history unavailable: {missing}; waiting for complete live bars" if missing else None
-                self.status("live", note)
+            self._history_status()
+        elif kind == "fallback":
+            if not self._is_connected(connection):
+                return
+            symbol, candles = detail
+            if candles and self.seed_fallback(candles, symbol):
+                self.history_errors.pop(symbol, None)
+                self.history_fallbacks[symbol] = INSTRUMENTS[symbol].label
+            self._history_status()
         else:
             self.ready.clear()
             for incoming in self.incoming.values():
@@ -767,7 +831,7 @@ class ShoonyaFeed(_Feed):
                     cutoff = self.cutoff.get(symbol)
                     if values and (cutoff is None or values[2] > cutoff):
                         if self._is_connected(connection):
-                            self.tick(values, symbol)
+                            self.tick(values, symbol, session_open=self.quotes[symbol].session_open)
 
     def stop(self):
         self.stopped.set()

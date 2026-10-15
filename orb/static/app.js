@@ -21,9 +21,11 @@ const chartMotion = new ChartMotion();
 const candleLists = new WeakMap();
 const candleClocks = new WeakMap();
 let chartSize = null;
-let comparisonLegendKey = '';
 let tipContext = null;
 const comparisonTips = new Map();
+const seriesLabels = new Map();
+let hoveredComparison = null;
+let focusedComparison = null;
 const sourceName = source => source === 'shoonya' ? 'Shoonya' : 'Yahoo Finance';
 let today = sessionDate();
 let selectedDate = today;
@@ -52,11 +54,11 @@ let renderFrame = 0;
 let palette;
 let comparisonVisible = true;
 let lastClockState = '';
+const comparisonPalette = ['comparison-line', 'comparison-line-2', 'comparison-line-3', 'comparison-line-4', 'comparison-line-5'];
 
 function readPalette() {
   const style = getComputedStyle(document.documentElement);
-  palette = Object.fromEntries(['up', 'down', 'wick', 'grid', 'chart-label', 'orb-line', 'orb-label', 'orb-fill', 'orb-opening', 'marker', 'price-line', 'price-fill', 'price-ink', 'crosshair', 'crosshair-fill', 'crosshair-ink', 'comparison-line', 'comparison-line-2', 'comparison-line-3', 'comparison-line-4'].map(key => [key, style.getPropertyValue(`--${key}`).trim()]));
-  comparisonLegendKey = '';
+  palette = Object.fromEntries(['up', 'down', 'wick', 'grid', 'chart-label', 'orb-line', 'orb-label', 'orb-fill', 'orb-opening', 'marker', 'price-line', 'price-fill', 'price-ink', 'crosshair', 'crosshair-fill', 'crosshair-ink', ...comparisonPalette].map(key => [key, style.getPropertyValue(`--${key}`).trim()]));
 }
 
 function setTheme(dark) {
@@ -278,15 +280,27 @@ function comparisonInstruments(data) {
   return Object.values(data?.instruments || {}).filter(item => item.symbol !== (data.primary_symbol || '^NSEI'));
 }
 
-const comparisonColor = index => palette[index % 4 ? `comparison-line-${index % 4 + 1}` : 'comparison-line'];
+const comparisonColor = index => palette[comparisonPalette[index % comparisonPalette.length]];
 
-function comparisonEntry(instrument, index, text) {
-  const entry = document.createElement('span');
-  entry.className = 'comparison-item';
-  entry.dataset.symbol = instrument.symbol;
-  entry.style.setProperty('--series-color', comparisonColor(index));
-  entry.textContent = `${instrument.label} ${text}`;
-  return entry;
+const comparisonQuoteDelay = instrument => Number.isFinite(instrument?.quote_delay_seconds) ? Math.max(0, instrument.quote_delay_seconds) : 0;
+const comparisonDelayLabel = instrument => comparisonQuoteDelay(instrument) ? `${Number((comparisonQuoteDelay(instrument) / 60).toFixed(1))}m delayed` : 'delayed';
+
+function comparisonProvenance(instrument, data) {
+  if (!instrument.history_fallback || !instrument.history_source_id) return { label: '', title: '' };
+  const name = source => source === 'yahoo' ? 'Yahoo' : sourceName(source);
+  const historySource = name(instrument.history_source_id);
+  const historyDelay = Number.isFinite(instrument.history_delay_seconds) && instrument.history_delay_seconds > 0
+    ? ` (${Number((instrument.history_delay_seconds / 60).toFixed(1))}m delayed)` : '';
+  const quoteSource = instrument.quote_source_id && name(instrument.quote_source_id);
+  const price = data?.replay_time != null ? `Replay price: ${historySource}`
+    : quoteSource ? `${instrument.quote_source_id === 'shoonya' ? 'Live quotes' : instrument.comparison_status === 'closed' ? 'After-hours price' : 'Price'}: ${quoteSource}` : '';
+  return { label: ` · ${historySource} history`, title: ` · History: ${historySource}${historyDelay}${price ? ` · ${price}` : ''}` };
+}
+
+function comparisonQuoteFresh(instrument) {
+  const timestamp = Date.parse(instrument?.last_tick_time), now = Date.now();
+  const age = now - timestamp - comparisonQuoteDelay(instrument) * 1000;
+  return connected && Number.isFinite(timestamp) && age >= 0 && age <= 90000;
 }
 
 // Sample the selected bars and put each close at its candle's center. The
@@ -295,7 +309,8 @@ function comparisonPoints(instrument, cutoff = Infinity) {
   if (!(instrument?.session_open > 0)) return [];
   const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
   const points = cutoff >= opening ? [{ time: opening, price: instrument.session_open, gap: true }] : [];
-  let previous = opening, gap = false;
+  const actualQuoteTime = Date.parse(instrument.last_tick_time);
+  let previous = opening, gap = false, hasCurrentBar = false;
   for (const candle of getCandles(instrument, selectedInterval)) {
     const { start, end } = candleClock(candle);
     // Backfill has a coverage boundary without claiming a fresh live quote.
@@ -303,7 +318,18 @@ function comparisonPoints(instrument, cutoff = Infinity) {
     if (!Number.isFinite(quoteTime) || quoteTime > cutoff || !candle.is_closed && !(start <= quoteTime && quoteTime < end)) continue;
     if (candle.close_is_valid === false || candle.is_complete === false) { gap = true; continue; }
     points.push({ time: (start + end) / 2, quoteTime, barStart: start, barEnd: end, price: candle.close, gap: gap || start > previous });
+    if (!candle.is_closed && quoteTime === actualQuoteTime) hasCurrentBar = true;
     previous = end; gap = false;
+  }
+  // Native quotes may be newer than delayed fallback history without a valid
+  // forming bar. Isolate the actual quote instead of bridging unseen trading.
+  const quoteTime = actualQuoteTime;
+  const separateNativeQuote = instrument.history_fallback && instrument.quote_source_id === 'shoonya'
+    && !hasCurrentBar && quoteTime >= (points.at(-1)?.quoteTime ?? opening);
+  if ((points.length === 1 || separateNativeQuote) && !replay && cutoff === Infinity
+      && ['live', 'delayed'].includes(instrument.comparison_status) && comparisonQuoteFresh(instrument)
+      && quoteTime >= opening && quoteTime < opening + 375 * 60000 && Number.isFinite(instrument.current_price)) {
+    points.push({ time: quoteTime, quoteTime, price: instrument.current_price, gap: true, quoteOnly: true });
   }
   return points;
 }
@@ -311,30 +337,45 @@ function comparisonPoints(instrument, cutoff = Infinity) {
 function comparisonStatus(instrument, data) {
   if (!(primaryInstrument(data)?.session_open > 0) || !(instrument?.session_open > 0) || !Number.isFinite(instrument.current_price)) return 'unavailable';
   const status = instrument.comparison_status || 'unavailable';
-  const timestamp = Date.parse(instrument.last_tick_time);
-  if (status === 'live' && (!connected || !Number.isFinite(timestamp) || Date.now() - timestamp > 90000)) return 'stale';
+  if (['live', 'delayed'].includes(status)) {
+    if (!comparisonQuoteFresh(instrument)) return 'stale';
+    return comparisonQuoteDelay(instrument) > 0 ? 'delayed' : status;
+  }
   return status;
 }
 
 function renderComparison(data) {
-  const primary = primaryInstrument(data), comparisons = comparisonInstruments(data);
-  const change = item => item?.session_open > 0 && Number.isFinite(item.current_price) ? (item.current_price / item.session_open - 1) * 100 : null;
-  const primaryStatus = comparisonStatus(primary, data);
-  const key = JSON.stringify([comparisonVisible, primaryStatus, change(primary), comparisons.map(item => [item.symbol, item.label, comparisonStatus(item, data), change(item), item.last_tick_time])]);
-  if (key === comparisonLegendKey) return;
-  comparisonLegendKey = key;
-  $('primary-return').textContent = `NIFTY 50 ${['live', 'closed'].includes(primaryStatus) ? percent(change(primary)) : primaryStatus}`;
-  $('comparison-return').replaceChildren(...comparisons.map((instrument, index) => {
-    const status = comparisonStatus(instrument, data);
-    const entry = comparisonEntry(instrument, index, ['live', 'closed'].includes(status) ? percent(change(instrument)) : status);
-    entry.title = `${instrument.label} · since 09:15 open${instrument.last_tick_time ? ` · last quote ${timeLabel(instrument.last_tick_time)}` : ''}`;
-    entry.dataset.status = status;
-    return entry;
-  }));
-  if (!comparisons.length) $('comparison-return').textContent = 'Indices unavailable';
-  $('comparison-summary').dataset.visible = String(comparisonVisible);
   $('comparison-toggle').setAttribute('aria-pressed', String(comparisonVisible));
-  $('comparison-toggle').setAttribute('aria-label', `${comparisonVisible ? 'Hide' : 'Show'} NIFTY comparison lines`);
+  $('comparison-toggle').setAttribute('aria-label', `${comparisonVisible ? 'Hide' : 'Show'} derivatives comparison lines`);
+}
+
+// Replay only sees completed bars reached by its clock. The final snapshot's
+// breakout state must never reveal a confirmation from later in the session.
+function replayBreakout(instrument, cutoff) {
+  const start = Date.parse(`${selectedDate}T09:15:00+05:30`), end = start + 45 * 60000;
+  const closed = getCandles(instrument, 5).filter(c => c.is_closed && candleClock(c).end <= cutoff
+    && candleClock(c).start >= start && candleClock(c).end <= start + 375 * 60000
+    && candleClock(c).end - candleClock(c).start === 300000 && (candleClock(c).start - start) % 300000 === 0)
+    .sort((a, b) => candleClock(a).start - candleClock(b).start);
+  const valid = candle => candle.is_complete !== false && candle.close_is_valid !== false && Number.isFinite(candle.close) && candle.close > 0;
+  const opening = closed.filter(c => candleClock(c).start >= start && candleClock(c).start < end);
+  const locked = cutoff >= end && opening.length === 9 && opening.every((c, i) => valid(c) && candleClock(c).start === start + i * 300000 && candleClock(c).end === start + (i + 1) * 300000);
+  const state = { basis: 'close', range_minutes: 45, confirmation_minutes: 5, range_locked: locked,
+    range_high: locked ? Math.max(...opening.map(c => c.close)) : null,
+    range_low: locked ? Math.min(...opening.map(c => c.close)) : null,
+    direction: null, confirmed_at: null, price: null };
+  if (!locked) return state;
+  for (const candle of closed.filter(c => candleClock(c).start >= end)) {
+    state.direction = valid(candle) ? candle.close > state.range_high ? 'BULLISH' : candle.close < state.range_low ? 'BEARISH' : null : null;
+    state.confirmed_at = valid(candle) ? candle.end_time : null;
+    state.price = valid(candle) ? candle.close : null;
+  }
+  return state;
+}
+
+function qualifyingDirection(instrument, data) {
+  return ['live', 'delayed', 'closed'].includes(comparisonStatus(instrument, data)) && instrument.breakout?.range_locked
+    && ['BULLISH', 'BEARISH'].includes(instrument.breakout.direction) ? instrument.breakout.direction : null;
 }
 
 function comparisonSeries(data) {
@@ -346,38 +387,177 @@ function comparisonSeries(data) {
     })) }));
 }
 
-function drawComparisons(data, series, { left, right, top, bottom, xMinute, y }) {
+function distanceToSegment(point, start, end) {
+  const dx = end[0] - start[0], dy = end[1] - start[1];
+  const fraction = Math.max(0, Math.min(1, ((point.x - start[0]) * dx + (point.y - start[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(point.x - start[0] - fraction * dx, point.y - start[1] - fraction * dy);
+}
+
+function comparisonEmphasis(symbol, direction, emphasis) {
+  if (emphasis.active) return emphasis.active === symbol ? 'focused' : 'muted';
+  if (direction) return 'qualifying';
+  return emphasis.reveal ? 'revealed' : 'hidden';
+}
+
+function primaryLabelGeometry(priceY, { right, top, bottom, width }) {
+  const above = priceY - 43 >= top;
+  return { left: right + 5, top: Math.max(top, Math.min(bottom - 28, above ? priceY - 42 : priceY + 13)),
+    width: Math.max(30, width - right - 9), height: 28, priceY };
+}
+
+function drawComparisons(data, series, { left, right, top, bottom, xMinute, y, primaryHovered }) {
   const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
   const position = point => [xMinute(555 + (point.time - opening) / 60000), y(point.normalized)];
-  const inspecting = pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom;
-  for (const { instrument, index, points } of series) {
-    const color = comparisonColor(index);
-    if (points.length) {
-      ctx.save();
-      ctx.beginPath(); ctx.rect(left, top, right - left, bottom - top); ctx.clip();
-      ctx.strokeStyle = color; ctx.lineWidth = 1.2;
-      ctx.globalAlpha = ['live', 'closed'].includes(comparisonStatus(instrument, data)) ? .8 : .35;
-      ctx.beginPath();
-      points.forEach(point => ctx[point.gap ? 'moveTo' : 'lineTo'](...position(point)));
-      ctx.stroke();
-      ctx.beginPath(); ctx.arc(...position(points.at(-1)), 2, 0, Math.PI * 2);
-      ctx.fillStyle = color; ctx.fill(); ctx.restore();
+  const qualifying = new Set(series.filter(item => qualifyingDirection(item.instrument, data)).map(item => item.instrument.symbol));
+  let nearest = null, distance = 7;
+  if (pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom) {
+    for (const { instrument, points } of series) {
+      if (!qualifying.has(instrument.symbol)) continue;
+      points.forEach((point, index) => {
+        const current = position(point), previous = index && !point.gap ? position(points[index - 1]) : current;
+        const candidate = distanceToSegment(pointer, previous, current);
+        if (candidate < distance) { nearest = instrument.symbol; distance = candidate; }
+      });
     }
-    if (!inspecting) continue;
-    const time = opening + (pointer.x - left) / (right - left) * 375 * 60000;
-    const point = points.find(item => item.barStart <= time && (time < item.barEnd
-      || time === item.barEnd && item.barEnd === opening + 375 * 60000));
-    const available = Boolean(point);
-    if (available) {
-      ctx.strokeStyle = color; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.arc(...position(point), 3, 0, Math.PI * 2); ctx.stroke();
-    }
-    const entry = comparisonEntry(instrument, index, available
-      ? `${number(point.price)} · ${percent((point.price / instrument.session_open - 1) * 100)} · ${timeLabel(point.barStart ?? point.time)}`
-      : 'unavailable at this time');
-    if (available) entry.title = `Quote ${timeLabel(point.quoteTime ?? point.time)}`;
-    $('comparison-detail').append(entry);
   }
+  const active = [focusedComparison, hoveredComparison, nearest].find(symbol => qualifying.has(symbol)) || null;
+  const primarySymbol = data?.primary_symbol || '^NSEI';
+  const reveal = !active && (primaryHovered || [focusedComparison, hoveredComparison].includes(primarySymbol));
+  const emphasis = { active, reveal, qualifying, position };
+  $('series-labels').dataset.focused = active || '';
+  $('series-labels').dataset.qualifying = String(qualifying.size);
+  $('series-labels').dataset.reveal = String(Boolean(reveal));
+  for (const { instrument, index, points } of series) {
+    if (!points.length) continue;
+    const qualifies = qualifying.has(instrument.symbol);
+    const state = comparisonEmphasis(instrument.symbol, qualifies, emphasis);
+    const healthy = ['live', 'closed', 'delayed'].includes(comparisonStatus(instrument, data));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(left, top, right - left, bottom - top); ctx.clip();
+    ctx.strokeStyle = comparisonColor(index);
+    ctx.lineWidth = qualifies ? 1.9 : 1.2;
+    ctx.globalAlpha = state === 'hidden' ? 0 : state === 'muted' ? .06 : state === 'revealed' ? healthy ? .32 : .15 : .95;
+    ctx.filter = state === 'muted' ? 'blur(3.2px)' : state === 'revealed' ? 'blur(1.6px)' : 'none';
+    ctx.beginPath();
+    points.forEach(point => ctx[point.gap ? 'moveTo' : 'lineTo'](...position(point)));
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(...position(points.at(-1)), qualifies ? 2.6 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = comparisonColor(index); ctx.fill(); ctx.restore();
+  }
+  return emphasis;
+}
+
+function clearSeriesLabels() {
+  seriesLabels.clear();
+  $('series-labels').replaceChildren();
+  $('series-labels').dataset.focused = '';
+  $('series-labels').dataset.qualifying = '0';
+  $('series-labels').dataset.reveal = 'false';
+  hoveredComparison = focusedComparison = null;
+}
+
+function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
+  const { left, right, top, bottom, xMinute, y, primaryLabel } = geometry;
+  const primary = primaryInstrument(data), primarySymbol = data?.primary_symbol || '^NSEI';
+  const entries = series.filter(item => item.points.length).map(item => {
+    const point = item.points.at(-1);
+    return { ...item, point, position: emphasis.position(point), direction: qualifyingDirection(item.instrument, data), primary: false };
+  });
+  if (primary?.session_open > 0 && Number.isFinite(shownPrice)) {
+    const last = getCandles(data).at(-1), opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
+    const time = last ? (candleClock(last).start + candleClock(last).end) / 2 : Date.parse(primary.last_tick_time);
+    if (Number.isFinite(time)) entries.push({ instrument: { ...primary, symbol: primarySymbol, label: 'NIFTY 50' },
+      point: { price: data.current_price }, position: [xMinute(555 + (time - opening) / 60000), y(shownPrice)], primary: true, direction: null });
+  }
+  const symbols = new Set(entries.map(entry => entry.instrument.symbol));
+  for (const [symbol, label] of seriesLabels) if (!symbols.has(symbol)) { label.remove(); seriesLabels.delete(symbol); }
+  if (!entries.length) return;
+  ctx.save(); ctx.font = `${canvas.clientWidth < 650 ? 9 : 10}px ui-monospace, monospace`;
+  for (const entry of entries) {
+    const { instrument, primary: isPrimary, direction } = entry;
+    const status = comparisonStatus(instrument, data);
+    const price = ['live', 'closed', 'delayed'].includes(status) && Number.isFinite(instrument.current_price)
+      ? instrument.current_price : entry.point.price;
+    const change = (price / instrument.session_open - 1) * 100;
+    const provenance = comparisonProvenance(instrument, data);
+    const delayed = status === 'delayed', history = Boolean(instrument.history_fallback);
+    entry.text = isPrimary ? `${instrument.label}\n${['live', 'closed', 'delayed'].includes(status) ? percent(change) : status}` : `${direction ? direction === 'BULLISH' ? '▲ ' : '▼ ' : ''}${instrument.label} ${percent(change)}${delayed ? ' D' : ''}${history ? ' H' : ''}${status === 'stale' ? ' · stale' : status === 'unavailable' ? ' · unavailable' : ''}`;
+    entry.emphasis = isPrimary ? 'primary' : comparisonEmphasis(instrument.symbol, direction, emphasis);
+    entry.width = Math.ceil(ctx.measureText(entry.text).width) + 6;
+    entry.status = status;
+    const timestamp = Date.parse(instrument.last_tick_time);
+    const breakout = instrument.breakout;
+    const confirmation = breakout?.direction && Number.isFinite(Date.parse(breakout.confirmed_at))
+      ? `${breakout.direction.toLowerCase()} confirmed ${timeLabel(breakout.confirmed_at)}`
+      : breakout?.range_locked ? Number.isFinite(breakout.price) ? 'latest close within range' : 'awaiting a valid 5m close'
+      : 'opening range incomplete';
+    entry.title = `${instrument.label} · ${percent(change)} since 09:15 open · ${status}${Number.isFinite(timestamp) ? ` · last quote ${timeLabel(timestamp)}` : ''}${delayed ? ` · ${comparisonDelayLabel(instrument)}` : ''}${provenance.title}${!isPrimary ? ` · 5m close outside the first 45m closing range · ${confirmation}` : ''}`;
+    if (direction) entry.title += ' · Hover or focus to isolate';
+    if (isPrimary) entry.title += ' · Hover or focus to reveal comparisons';
+  }
+  for (const entry of entries) {
+    if (entry.primary) {
+      entry.labelX = primaryLabel.left;
+      entry.labelY = primaryLabel.top + 9;
+      continue;
+    }
+    // Providers can have different coverage; keep each label beside its own
+    // endpoint instead of letting one newer or delayed line move every label.
+    const tipX = entry.position[0];
+    entry.afterTip = tipX + 11 + entry.width <= right - 5;
+    entry.labelX = Math.round(Math.max(left + 4, Math.min(
+      entry.afterTip ? tipX + 11 : tipX - entry.width - 11, right - entry.width - 5)));
+  }
+  const visible = entries.filter(entry => !entry.primary && entry.emphasis !== 'hidden');
+  const gap = Math.min(20, (bottom - top - 18) / Math.max(1, visible.length - 1));
+  const ordered = [...visible].sort((a, b) => a.position[1] - b.position[1] || a.instrument.symbol.localeCompare(b.instrument.symbol));
+  let previousY = top - gap + 9;
+  ordered.forEach(entry => { entry.labelY = Math.max(top + 9, entry.position[1], previousY + gap); previousY = entry.labelY; });
+  const overflow = (ordered.at(-1)?.labelY ?? bottom - 9) - (bottom - 9);
+  if (overflow > 0) {
+    ordered.at(-1).labelY -= overflow;
+    for (let index = ordered.length - 2; index >= 0; index--) ordered[index].labelY = Math.min(ordered[index].labelY, ordered[index + 1].labelY - gap);
+  }
+  for (const entry of entries) {
+    const { instrument, primary: isPrimary, direction, index, position: [tipX, tipY] } = entry;
+    let label = seriesLabels.get(instrument.symbol);
+    if (!label) {
+      label = document.createElement(isPrimary ? 'span' : 'button');
+      label.className = 'series-endpoint';
+      label.dataset.symbol = instrument.symbol;
+      if (!isPrimary) label.type = 'button';
+      label.addEventListener('pointerenter', () => { hoveredComparison = instrument.symbol; scheduleRender(); });
+      label.addEventListener('pointerleave', () => { if (hoveredComparison === instrument.symbol) hoveredComparison = null; scheduleRender(); });
+      label.addEventListener('focus', () => { focusedComparison = instrument.symbol; scheduleRender(); });
+      label.addEventListener('blur', () => { if (focusedComparison === instrument.symbol) focusedComparison = null; scheduleRender(); });
+      $('series-labels').append(label); seriesLabels.set(instrument.symbol, label);
+    }
+    const state = entry.emphasis;
+    if (label.textContent !== entry.text) label.textContent = entry.text;
+    label.title = entry.title;
+    label.setAttribute('aria-label', entry.title);
+    label.dataset.status = entry.status;
+    label.dataset.direction = direction || 'none';
+    label.dataset.emphasis = state;
+    label.dataset.primary = String(isPrimary);
+    label.hidden = state === 'hidden';
+    if (instrument.last_tick_time) label.dataset.asof = instrument.last_tick_time;
+    else delete label.dataset.asof;
+    label.tabIndex = isPrimary || direction ? 0 : -1;
+    const color = isPrimary ? palette['price-ink'] : comparisonColor(index);
+    label.style.setProperty('--series-color', color);
+    label.style.left = `${entry.labelX}px`;
+    label.style.top = `${Math.round((entry.labelY ?? entry.position[1]) - 9)}px`;
+    label.style.maxWidth = `${isPrimary ? primaryLabel.width : Math.max(30, right - entry.labelX - 4)}px`;
+    label.style.opacity = isPrimary && emphasis.active ? '.65' : '';
+    if (isPrimary || state === 'hidden') continue;
+    const joinX = entry.afterTip ? entry.labelX - 4 : Math.min(right, entry.labelX + entry.width + 4);
+    ctx.globalAlpha = state === 'muted' ? .08 : state === 'revealed' ? .2 : .35;
+    ctx.strokeStyle = color; ctx.lineWidth = .65;
+    ctx.beginPath(); ctx.moveTo(tipX + (entry.afterTip ? 4 : -4), tipY);
+    ctx.lineTo(joinX, entry.labelY); ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function setupFor(data, interval = selectedInterval) {
@@ -453,7 +633,7 @@ function replayView(time) {
     const fresh = last && last === samples.at(-1) && time - candleClock(last).end <= (closed.length ? 5 : 15) * 60000;
     return [symbol, { ...instrument, candles: closedFifteen, candles_5m: closed, active_candle: null, active_candle_5m: null,
       current_price: last?.close ?? instrument.session_open, last_tick_time: last?.end_time ?? null,
-      comparison_status: instrument.session_open > 0 && fresh ? 'closed' : 'unavailable' }];
+      comparison_status: instrument.session_open > 0 && fresh ? 'closed' : 'unavailable', breakout: replayBreakout(instrument, time) }];
   }));
   const primarySymbol = snapshot.primary_symbol || '^NSEI';
   if (instruments[primarySymbol]) instruments[primarySymbol].current_price = bars.at(-1)?.close ?? null;
@@ -588,26 +768,15 @@ function render(now = performance.now()) {
 }
 
 function drawChart(now = performance.now(), data = displayView()) {
-  $('comparison-detail').textContent = '';
   const width = chartSize?.width ?? canvas.clientWidth, height = chartSize?.height ?? canvas.clientHeight;
   ctx.clearRect(0, 0, width, height);
-  if (width < 100 || height < 80) return;
+  if (width < 100 || height < 80) { clearSeriesLabels(); return; }
   const baseline = [primaryInstrument(data)?.session_open, ...comparisonInstruments(data).map(item => `${item.symbol}:${item.session_open}`)];
   const motionContext = JSON.stringify([selectedDate, data?.date, selectedSource, sourceEpoch, sourceGeneration, Boolean(replay), comparisonVisible, baseline]);
-  if (tipContext !== motionContext) { comparisonTips.clear(); tipContext = motionContext; }
+  if (tipContext !== motionContext) { comparisonTips.clear(); clearSeriesLabels(); tipContext = motionContext; }
   chartMotion.begin(motionContext, now,
     !reducedMotion.matches && !loading && Boolean(replay || selectedDate === today && data?.market_status !== 'closed'));
   const left = 12, right = width - 76, top = 20, bottom = height - 30;
-  const inspecting = pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom;
-  $('chart-inspector').classList.toggle('is-hovering', Boolean(inspecting));
-  if (inspecting) {
-    const inspectorWidth = Math.min(300, right - left);
-    $('chart-inspector').style.left = `${Math.max(left, Math.min(right - inspectorWidth, pointer.x < (left + right) / 2 ? pointer.x + 16 : pointer.x - inspectorWidth - 16))}px`;
-    $('chart-inspector').style.top = `${Math.max(top, Math.min(bottom - 150, pointer.y + 16))}px`;
-  } else {
-    $('chart-inspector').style.left = `${left}px`;
-    $('chart-inspector').style.top = '0px';
-  }
   // One fixed 09:15–15:30 axis for both candle intervals and opening ranges.
   const dayWidth = right - left;
   const xMinute = minute => left + (minute - 555) / 375 * dayWidth;
@@ -634,7 +803,8 @@ function drawChart(now = performance.now(), data = displayView()) {
     if (fraction >= 1) { transition = null; outgoing = []; }
   }
   if (!candles.length && !outgoing.length) {
-    $('ohlc').textContent = 'Move over a candle to inspect';
+    clearSeriesLabels();
+    $('ohlc').textContent = '';
     canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${selectedInterval}-minute candles. ${empty.textContent}`);
     chartMotion.end();
     return;
@@ -718,7 +888,17 @@ function drawChart(now = performance.now(), data = displayView()) {
       ctx.fillText(label, right - 5, y(price) - 5);
     }
   }
-  drawComparisons(data, series, { left, right, top, bottom, xMinute, y });
+  const primaryLabel = primaryLabelGeometry(y(shownPrice), { right, top, bottom, width });
+  const primaryHovered = pointer && (
+    pointer.x >= right && pointer.x <= width && pointer.y >= Math.min(primaryLabel.top, primaryLabel.priceY - 10)
+      && pointer.y <= Math.max(primaryLabel.top + primaryLabel.height, primaryLabel.priceY + 10)
+    || candles.some(candle => {
+      const shape = geometry(candle, selectedInterval);
+      return Math.abs(pointer.x - shape.center) <= shape.width / 2 + 5
+        && pointer.y >= y(shape.high) - 5 && pointer.y <= y(shape.low) + 5;
+    }));
+  const comparisonGeometry = { left, right, top, bottom, xMinute, y, primaryHovered, primaryLabel };
+  const emphasis = drawComparisons(data, series, comparisonGeometry);
   function geometry(candle, interval) {
     candle = visualCandle(candle);
     const label = timeLabel(candle.start_time);
@@ -730,7 +910,7 @@ function drawChart(now = performance.now(), data = displayView()) {
   const parentFor = (candle, list) => list.find(parent => Date.parse(parent.start_time) <= Date.parse(candle.start_time) && Date.parse(candle.start_time) < Date.parse(parent.end_time));
   function paintCandle(candle, shape, alpha = 1) {
     if (alpha <= 0) return;
-    ctx.globalAlpha = alpha * (candle.is_complete === false ? .65 : 1);
+    ctx.globalAlpha = alpha * (candle.is_complete === false ? .65 : 1) * (emphasis.active ? .65 : 1);
     line(shape.center, y(shape.high), shape.center, y(shape.low), palette.wick);
     const bodyTop = Math.min(y(shape.open), y(shape.close));
     const bodyHeight = Math.max(1.5, Math.abs(y(shape.open) - y(shape.close)));
@@ -802,13 +982,16 @@ function drawChart(now = performance.now(), data = displayView()) {
     line(pointer.x, top, pointer.x, bottom, palette.crosshair, [3, 3]);
     line(left, pointer.y, right, pointer.y, palette.crosshair, [3, 3]);
     const price = min + (bottom - pointer.y) / (bottom - top) * (max - min);
-    ctx.fillStyle = palette['crosshair-fill']; ctx.fillRect(right, pointer.y - 10, 73, 20);
-    ctx.fillStyle = palette['crosshair-ink']; ctx.textAlign = 'center';
-    ctx.fillText(number(price), right + 36, pointer.y + 3);
+    if (pointer.y + 10 < primaryLabel.top || pointer.y - 10 > primaryLabel.top + primaryLabel.height) {
+      ctx.fillStyle = palette['crosshair-fill']; ctx.fillRect(right, pointer.y - 10, 73, 20);
+      ctx.fillStyle = palette['crosshair-ink']; ctx.textAlign = 'center';
+      ctx.fillText(number(price), right + 36, pointer.y + 3);
+    }
   }
+  drawSeriesLabels(data, series, comparisonGeometry, emphasis, shownPrice);
   const focus = hovered || candles.at(-1);
   $('ohlc').textContent = focus ? `${timeLabel(focus.start_time)}  O ${number(focus.open)}  H ${number(focus.high)}  L ${number(focus.low)}  C ${number(focus.close)}${focus.close_is_valid === false ? '  · stale close' : focus.is_complete === false ? '  · incomplete' : focus.is_closed ? '' : '  · forming'}` : 'Move over a candle to inspect';
-  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}. ${$('comparison-return').textContent}, lines ${comparisonVisible ? 'shown' : 'hidden'}, percentage change since 09:15 open.${replay ? ' Illustrative candle replay.' : ''}`);
+  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}. ${[...seriesLabels.values()].filter(label => !label.hidden).map(label => label.getAttribute('aria-label')).join('. ')}, lines ${comparisonVisible ? 'shown' : 'hidden'}, percentage change since 09:15 open.${replay ? ' Illustrative candle replay.' : ''}`);
   chartMotion.end();
 }
 
@@ -911,7 +1094,14 @@ $('check-ip').addEventListener('click', checkPublicIp);
 $('interval-15m').addEventListener('click', () => setIntervalMinutes(15));
 $('interval-5m').addEventListener('click', () => setIntervalMinutes(5));
 $('theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme !== 'dark'));
-$('comparison-toggle').addEventListener('click', () => { comparisonVisible = !comparisonVisible; scheduleRender(); });
+document.querySelector('.instrument').addEventListener('pointerenter', () => { hoveredComparison = '^NSEI'; scheduleRender(); });
+document.querySelector('.instrument').addEventListener('pointerleave', () => { if (hoveredComparison === '^NSEI') hoveredComparison = null; scheduleRender(); });
+$('comparison-toggle').addEventListener('click', () => {
+  comparisonVisible = !comparisonVisible;
+  if (!comparisonVisible) clearSeriesLabels();
+  renderComparison();
+  scheduleRender();
+});
 $('replay').addEventListener('click', () => replay ? stopReplay() : startReplay());
 reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { chartMotion.finish(); transition = null; } scheduleRender(); });
 $('chart-wrap').addEventListener('keydown', e => {

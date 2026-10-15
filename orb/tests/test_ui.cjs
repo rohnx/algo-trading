@@ -12,7 +12,8 @@ const COMPARISONS = [
   ['^NSEBANK', 'BANKNIFTY', 50000],
   ['NIFTY_MID_SELECT.NS', 'MIDCAP SELECT', 16000],
   ['^NSMIDCP', 'NIFTY NEXT 50', 70000],
-  ['NIFTY_FIN_SERVICE.NS', 'FIN NIFTY', 24000]
+  ['NIFTY_FIN_SERVICE.NS', 'FIN NIFTY', 24000],
+  ['FOCIT.BO', 'FOCIT', 30000]
 ];
 const failures = [], browserErrors = [];
 let delayedDate = '';
@@ -45,6 +46,10 @@ function snapshot(date, count = 25, extra = {}) {
       '5': { setup_id: 'orb_45m_5m', range_minutes: 45, confirmation_minutes: 5, orb_high: count ? 25064 : null, orb_low: count ? 24990 : null, range_locked: count >= 3, signals: [] }
     }, ...extra };
 }
+function neutralBreakout(extra = {}) {
+  return { basis: 'close', range_minutes: 45, confirmation_minutes: 5, range_locked: false,
+    range_high: null, range_low: null, direction: null, confirmed_at: null, price: null, ...extra };
+}
 function comparisonSnapshot(date = TODAY, count = 8, bankExtra = {}, primaryExtra = {}) {
   const data = snapshot(date, count, { symbol: '^NSEI', primary_symbol: '^NSEI', ...primaryExtra });
   const bankBars = interval => Array.from({ length: count * 15 / interval }, (_, slot) => ({
@@ -56,7 +61,7 @@ function comparisonSnapshot(date = TODAY, count = 8, bankExtra = {}, primaryExtr
     candles: bankBars(15), candles_5m: bankFive, active_candle: null, active_candle_5m: null,
     current_price: bankFive.at(-1)?.close ?? null, last_tick_time: bankFive.at(-1)?.end_time ?? null,
     session_open: count ? 50000 : null, change_pct: count ? (bankFive.at(-1).close / 50000 - 1) * 100 : null,
-    comparison_status: count ? 'closed' : 'unavailable', ...bankExtra
+    comparison_status: count ? 'closed' : 'unavailable', breakout: neutralBreakout(), ...bankExtra
   };
   const primary = {
     symbol: '^NSEI', label: 'NIFTY', date, candles: data.candles, candles_5m: data.candles_5m,
@@ -74,9 +79,28 @@ function comparisonSnapshot(date = TODAY, count = 8, bankExtra = {}, primaryExtr
     const five = bars(5);
     instruments[symbol] = { symbol, label, date, candles: bars(15), candles_5m: five, session_open: count ? sessionOpen : null,
       current_price: five.at(-1)?.close ?? null, last_tick_time: five.at(-1)?.end_time ?? null,
-      comparison_status: count ? 'closed' : 'unavailable', active_candle: null, active_candle_5m: null };
+      comparison_status: count ? 'closed' : 'unavailable', active_candle: null, active_candle_5m: null, breakout: neutralBreakout() };
   }
   return { ...data, instruments };
+}
+function breakoutSnapshot(closedCount = 13) {
+  const data = comparisonSnapshot(TODAY, 5);
+  const closes = [50000, 50002, 49998, 50004, 49996, 50006, 49994, 50008, 49992, 50015, 50008, 49980, 50000];
+  const bank = data.instruments['^NSEBANK'];
+  bank.candles_5m = closes.slice(0, closedCount).map((close, slot) => ({
+    ...candle(TODAY, slot, slot ? closes[slot - 1] : 50000, close, 5),
+    symbol: bank.symbol, high: 50100, low: 49900
+  }));
+  bank.candles = Array.from({ length: Math.floor(closedCount / 3) }, (_, slot) => {
+    const group = bank.candles_5m.slice(slot * 3, slot * 3 + 3);
+    return { ...candle(TODAY, slot, group[0].open, group.at(-1).close), symbol: bank.symbol, high: 50100, low: 49900 };
+  });
+  bank.current_price = bank.candles_5m.at(-1).close;
+  bank.last_tick_time = bank.candles_5m.at(-1).end_time;
+  const direction = ({ 10: 'BULLISH', 12: 'BEARISH' })[closedCount] || null;
+  bank.breakout = neutralBreakout({ range_locked: closedCount >= 9, range_high: 50008, range_low: 49992,
+    direction, confirmed_at: direction ? bank.last_tick_time : null, price: direction ? bank.current_price : null });
+  return data;
 }
 function motionSnapshot() {
   const data = comparisonSnapshot(TODAY, 8, {}, { current_price: 25020, market_status: 'live' });
@@ -200,7 +224,7 @@ const server = http.createServer((request, response) => {
           if (this.canvas.id === 'chart') {
             if (method === 'beginPath') { points = []; commands = []; }
             if (method === 'moveTo' || method === 'lineTo') { points.push(args); commands.push({ method, point: args }); }
-            if (method === 'stroke') window.__strokes.push({ points: [...points], commands: [...commands], color: this.strokeStyle, dash: this.getLineDash(), alpha: this.globalAlpha, width: this.lineWidth });
+            if (method === 'stroke') window.__strokes.push({ points: [...points], commands: [...commands], color: this.strokeStyle, dash: this.getLineDash(), alpha: this.globalAlpha, width: this.lineWidth, filter: this.filter });
             if (method === 'fill') window.__markers.push({ points: [...points], color: this.fillStyle, alpha: this.globalAlpha });
           }
           return native.apply(this, args);
@@ -228,10 +252,10 @@ const server = http.createServer((request, response) => {
         context.save(); context.strokeStyle = css.getPropertyValue(name).trim();
         const result = context.strokeStyle; context.restore(); return result;
       };
-      const comparisonColors = ['--comparison-line', '--comparison-line-2', '--comparison-line-3', '--comparison-line-4'].map(color);
+      const comparisonColors = ['--comparison-line', '--comparison-line-2', '--comparison-line-3', '--comparison-line-4', '--comparison-line-5'].map(color);
       const price = color('--price-line');
       const bodyColors = [color('--up'), color('--down')];
-      const series = comparisonColors.map(shade => window.__strokes.filter(line => line.color === shade && line.width > 1 && line.width <= 1.5 && line.points.length > 0));
+      const series = comparisonColors.map(shade => window.__strokes.filter(line => line.color === shade && line.width >= 1.1 && line.points.length > 0));
       return {
         series,
         comparison: series[0],
@@ -245,6 +269,10 @@ const server = http.createServer((request, response) => {
       };
       return window.__captureChart(options);
     }, options);
+    const revealComparisons = async () => {
+      await page.locator('#series-labels [data-primary="true"]').hover();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'true');
+    };
     const waitDate = date => page.waitForFunction(date => document.querySelector('#session-date').value === date && document.querySelector('#chart').getAttribute('aria-label').includes(date), date);
     async function holdSourceRequest(action) {
       holdSource = true;
@@ -325,7 +353,7 @@ const server = http.createServer((request, response) => {
       assert.equal(result.primary, active.close); assert.equal(result.bank, 50088);
       assert.equal(result.bankLabel, 'BANKNIFTY'); assert.deepEqual(result.bankActive, [null, null]);
       await emit(comparisonSnapshot(TODAY, 2));
-      assert.deepEqual(await page.evaluate(() => Object.values(live.instruments).map(instrument => instrument.candles_5m.length)), Array(5).fill(6));
+      assert.deepEqual(await page.evaluate(() => Object.values(live.instruments).map(instrument => instrument.candles_5m.length)), Array(COMPARISONS.length + 1).fill(6));
       await emit(snapshot(TODAY, 8));
     });
     await check('one accepted restart snapshot refreshes history once', async () => {
@@ -367,7 +395,7 @@ const server = http.createServer((request, response) => {
       await emit(fixture);
       assert.equal(await page.locator('#session-status').textContent(), 'Live');
       await page.evaluate(() => { window.__now += 90001; });
-      await page.waitForFunction(() => document.querySelector('#primary-return').textContent.includes('stale'));
+      await page.waitForFunction(() => document.querySelector('#series-labels [data-symbol="^NSEI"]')?.dataset.status === 'stale');
       assert.equal(await page.locator('#session-status').textContent(), 'Waiting for quotes');
       await page.evaluate(() => { window.__chartDraws = 0; });
       await page.waitForTimeout(1250);
@@ -687,7 +715,7 @@ const server = http.createServer((request, response) => {
       assert.equal(await page.locator('#price').textContent(), '26002.00');
       assert.equal(await page.locator('#source-select').inputValue(), 'yahoo');
     });
-    await check('comparisons use native selected bars at the corresponding candle centers and hover bucket', async () => {
+    await check('comparisons use native selected bars at candle centers with labels beside their endpoints', async () => {
       const fixture = comparisonSnapshot(TODAY, 8, {}, { current_price: 25040 });
       for (const [symbol, , open] of COMPARISONS) {
         fixture.instruments[symbol].current_price = open * 1.0016;
@@ -699,12 +727,14 @@ const server = http.createServer((request, response) => {
       }
       await emit(fixture);
       assert.equal(await page.locator('#comparison-toggle').getAttribute('aria-pressed'), 'true');
-      assert.equal((await page.locator('#comparison-toggle').textContent()).trim(), 'NIFTY');
-      for (const [, label] of COMPARISONS) assert.ok((await page.locator('#comparison-return').textContent()).includes(label));
-      assert.match(await page.locator('#primary-return').textContent(), /NIFTY\s?50.*0\.16/);
+      assert.equal((await page.locator('#comparison-toggle').textContent()).trim(), 'Derivatives');
+      assert.equal(await page.locator('#comparison-toggle').getAttribute('aria-label'), 'Hide derivatives comparison lines');
+      for (const [, label] of COMPARISONS) assert.ok((await page.locator('#series-labels').textContent()).includes(label));
+      assert.equal(await page.locator('#primary-return, #comparison-return, #chart-inspector, #comparison-detail').count(), 0, 'the top return list and hover card are removed');
+      assert.match(await page.locator('#series-labels [data-symbol="^NSEI"]').textContent(), /NIFTY\s?50[\s\S]*0\.16/);
       const fifteen = await captureChart();
-      assert.equal(new Set(fifteen.series.map(lines => lines[0]?.color)).size, 4, 'four comparison colors are distinct');
-      assert.deepEqual(await page.locator('#comparison-return .comparison-item').evaluateAll(items => items.map(item => item.dataset.symbol)), COMPARISONS.map(([symbol]) => symbol), 'legend order is stable across all four indices');
+      assert.equal(new Set(fifteen.series.map(lines => lines[0]?.color)).size, COMPARISONS.length, 'all comparison colors are distinct');
+      assert.deepEqual(await page.locator('#series-labels button.series-endpoint').evaluateAll(items => items.map(item => item.dataset.symbol)), COMPARISONS.map(([symbol]) => symbol), 'endpoint controls keep a stable order across all indices');
       for (const interval of [15, 5]) {
         if (interval === 5) { await page.locator('#interval-5m').click(); await page.waitForTimeout(500); }
         const chart = interval === 15 ? fifteen : await captureChart();
@@ -720,11 +750,9 @@ const server = http.createServer((request, response) => {
         }
         const bounds = await page.locator('#chart').boundingBox();
         await page.mouse.move(bounds.x + 12 + (chart.width - 88) / 375, bounds.y + 40);
-        await page.waitForFunction(() => document.querySelector('#comparison-detail').textContent.includes('BANKNIFTY'));
-        const detail = await page.locator('#comparison-detail').textContent();
         assert.match(await page.locator('#ohlc').textContent(), /09:15/);
-        assert.equal((detail.match(/09:15/g) || []).length, 4, 'comparison hover selects the same candle bucket before its center');
-        assert.match(detail, interval === 15 ? /50050\.00/ : /50010\.00/, 'hover reads the selected interval close');
+        assert.equal(await page.locator('#chart-inspector, #comparison-detail').count(), 0, 'chart hover cannot create a floating card');
+        assert.match(await page.locator('#series-labels [data-symbol="^NSEBANK"]').textContent(), /BANKNIFTY.*0\.16/, 'the endpoint retains the actual return while chart hover moves');
         await page.mouse.move(0, 0);
       }
       const liveIntervals = motionSnapshot();
@@ -746,12 +774,11 @@ const server = http.createServer((request, response) => {
         await page.evaluate(interval => { setIntervalMinutes(interval); transition = null; }, interval);
         const detail = await page.evaluate(() => {
           pointer = { x: canvas.clientWidth - 76, y: 40 }; drawChart();
-          const text = document.querySelector('#comparison-detail').textContent;
-          pointer = null; return { text, ohlc: document.querySelector('#ohlc').textContent };
+          pointer = null; return { ohlc: document.querySelector('#ohlc').textContent };
         });
         const start = interval === 15 ? '15:15' : '15:25';
         assert.ok(detail.ohlc.includes(start));
-        assert.equal((detail.text.match(new RegExp(start, 'g')) || []).length, 4, 'hover at exactly 15:30 selects the final candle bucket');
+        assert.equal(await page.locator('#chart-inspector').count(), 0, 'final-candle hover stays minimal');
       }
       await page.locator('#interval-15m').click(); await page.waitForTimeout(500);
     });
@@ -803,7 +830,7 @@ const server = http.createServer((request, response) => {
         }
       };
       assertContinuousEndpoint(await captureChart(), 122.5);
-      assert.deepEqual(await page.locator('#comparison-return .comparison-item').evaluateAll(items => items.map(item => item.dataset.status)), ['stale', 'stale', 'stale', 'stale'], 'historical coverage never impersonates a live quote');
+      assert.deepEqual(await page.locator('#series-labels button.series-endpoint').evaluateAll(items => items.map(item => item.dataset.status)), COMPARISONS.map(() => 'stale'), 'historical coverage never impersonates a live quote');
       const guards = await page.evaluate(instrument => {
         const points = change => comparisonPoints({ ...instrument, ...change });
         const lastTime = change => points(change).at(-1).time;
@@ -832,7 +859,7 @@ const server = http.createServer((request, response) => {
         await emit({ type: 'state', symbol, date: TODAY, instruments: { [symbol]: instrument } });
       }
       assertContinuousEndpoint(await captureChart(), 122.5);
-      assert.deepEqual(await page.locator('#comparison-return .comparison-item').evaluateAll(items => items.map(item => item.dataset.status)), ['live', 'live', 'live', 'live']);
+      assert.deepEqual(await page.locator('#series-labels button.series-endpoint').evaluateAll(items => items.map(item => item.dataset.status)), COMPARISONS.map(() => 'live'));
       const rollover = `${TODAY}T11:20:01+05:30`;
       await page.evaluate(rollover => { window.__now = Date.parse(rollover); }, rollover);
       for (const [symbol] of COMPARISONS) {
@@ -1026,7 +1053,7 @@ const server = http.createServer((request, response) => {
       await emit(fixture);
       assert.deepEqual((await captureChart()).bodies, initial.bodies, 'a fresh snapshot resets the fitted scale');
     });
-    await check('large positive and negative comparison moves fit fully and the NIFTY toggle controls all four lines', async () => {
+    await check('large positive and negative comparison moves fit fully and the Derivatives toggle controls all lines', async () => {
       const fixture = comparisonSnapshot(TODAY, 8);
       for (const [index, [symbol, , open]] of COMPARISONS.entries()) {
         const close = open * (index % 2 ? .72 : 1.35);
@@ -1048,12 +1075,210 @@ const server = http.createServer((request, response) => {
       await page.locator('#comparison-toggle').click();
       await page.waitForFunction(() => document.querySelector('#comparison-toggle').getAttribute('aria-pressed') === 'false');
       const hidden = await captureChart();
-      assert.equal(hidden.allComparisons.length, 0, 'the one toggle hides all four lines');
+      assert.equal(hidden.allComparisons.length, 0, 'the one toggle hides all comparison lines');
+      assert.equal(await page.locator('#comparison-toggle').getAttribute('aria-label'), 'Show derivatives comparison lines');
       assert.notDeepEqual(hidden.bodies.map(body => body.y), enabled.bodies.map(body => body.y), 'disabling comparisons refits to primary values');
       assert.equal(await page.evaluate(() => JSON.stringify(view)), primaryBefore, 'display toggles never alter market data');
       await page.locator('#comparison-toggle').click();
       await page.waitForFunction(() => document.querySelector('#comparison-toggle').getAttribute('aria-pressed') === 'true');
       assert.deepEqual((await captureChart()).series, enabled.series, 'enabling restores every fitted comparison');
+    });
+    await check('delayed quotes retain their actual return and timestamp until their adjusted freshness expires', async () => {
+      const originalNow = await page.evaluate(() => window.__now);
+      try {
+        const fixture = comparisonSnapshot(TODAY, 7), focit = fixture.instruments['FOCIT.BO'];
+        focit.comparison_status = 'delayed'; focit.quote_delay_seconds = 900;
+        focit.last_tick_time = `${TODAY}T11:02:00+05:30`; focit.current_price = 30060;
+        focit.active_candle = { ...candle(TODAY, 7, 30048, 30060), symbol: focit.symbol, is_closed: false };
+        focit.active_candle_5m = { ...candle(TODAY, 21, 30048, 30060, 5), symbol: focit.symbol, is_closed: false };
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T11:17:00+05:30'); });
+        await emit(fixture);
+        const legend = page.locator('#series-labels [data-symbol="FOCIT.BO"]');
+        assert.equal(await legend.getAttribute('data-status'), 'delayed');
+        assert.match(await legend.textContent(), /FOCIT.*\+0\.20%.*D/);
+        assert.equal(await legend.getAttribute('data-asof'), focit.last_tick_time);
+        assert.match(await legend.getAttribute('title'), /last quote 11:02.*15m delayed/);
+        await revealComparisons();
+        const delayed = await captureChart();
+        assert.ok(delayed.series[4].every(line => line.alpha === .32), 'expected provider delay retains healthy reveal opacity');
+        assert.equal(await page.evaluate(() => view.instruments['FOCIT.BO'].last_tick_time), focit.last_tick_time, 'freshness adjustment never rewrites the upstream timestamp');
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': { comparison_status: 'live' } } });
+        assert.equal(await legend.getAttribute('data-status'), 'delayed', 'declared quote delay cannot be presented as live');
+        assert.equal(await page.evaluate(() => comparisonStatus({ ...view.instruments['FOCIT.BO'],
+          last_tick_time: '2026-10-05T11:03:00+05:30' }, view)), 'stale', 'a quote ahead of the delayed source clock is not fresh');
+        await page.evaluate(() => { window.__now += 90001; });
+        await page.waitForFunction(() => document.querySelector('#series-labels [data-symbol="FOCIT.BO"]').dataset.status === 'stale');
+        assert.match(await legend.textContent(), /FOCIT.*stale/);
+        assert.ok((await captureChart()).series[4].every(line => line.alpha === .15), 'an interrupted delayed feed becomes stale');
+      } finally {
+        await page.evaluate(now => { window.__now = now; }, originalNow);
+        await emit(snapshot(TODAY, 8));
+      }
+    });
+    await check('Shoonya displays the complete FOCIT Yahoo fallback with provenance after hours and during replay', async () => {
+      try {
+        await holdSourceRequest(() => page.locator('#source-select').selectOption('shoonya'));
+        const fixture = comparisonSnapshot(TODAY, 25), focit = fixture.instruments['FOCIT.BO'];
+        Object.assign(focit, { history_fallback: true, history_source_id: 'yahoo', quote_source_id: 'yahoo',
+          history_delay_seconds: 900, quote_delay_seconds: 900 });
+        await emit(fixture);
+        releaseSourceRequest();
+        await page.waitForFunction(() => !document.querySelector('#source-select').disabled);
+        assert.equal(await page.locator('#source-select').inputValue(), 'shoonya');
+        assert.equal(await page.locator('#session-status').textContent(), 'Market closed');
+        const legend = page.locator('#series-labels [data-symbol="FOCIT.BO"]');
+        assert.equal(await legend.getAttribute('data-status'), 'closed');
+        assert.match(await legend.textContent(), /FOCIT.*\+0\.60%.*H/);
+        assert.doesNotMatch(await legend.textContent(), /stale|unavailable/);
+        assert.match(await legend.getAttribute('title'), /History: Yahoo \(15m delayed\).*After-hours price: Yahoo/);
+        for (const interval of [15, 5]) {
+          await page.evaluate(interval => { setIntervalMinutes(interval); transition = null; }, interval);
+          const points = await page.evaluate(() => comparisonPoints(view.instruments['FOCIT.BO']));
+          assert.equal(points.length, (interval === 15 ? 25 : 75) + 1, 'the fallback contains each real selected bar and the opening anchor');
+          await revealComparisons();
+          const chart = await captureChart();
+          assert.equal(chart.series[4].flatMap(line => line.points).length, points.length, 'the FOCIT fallback line is visible at both intervals');
+          assert.ok(chart.series[4].every(line => line.alpha === .32), 'closed fallback history can be revealed at both intervals');
+        }
+        await page.locator('#replay').click();
+        await page.evaluate(() => {
+          replay.time = Date.parse(`${selectedDate}T10:30:00+05:30`); replay.complete = true;
+          replay.frame = replayView(replay.time); scheduleRender();
+          return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        assert.match(await legend.textContent(), /H/);
+        assert.match(await legend.getAttribute('title'), /History: Yahoo.*Replay price: Yahoo/);
+        assert.doesNotMatch(await legend.getAttribute('title'), /After-hours price/);
+        assert.equal(await page.evaluate(() => displayView().instruments['FOCIT.BO'].history_fallback), true);
+        await page.locator('#replay').click();
+        await page.waitForFunction(() => document.querySelector('#series-labels [data-symbol="FOCIT.BO"]').title.includes('After-hours price: Yahoo'));
+        assert.match(await legend.getAttribute('title'), /After-hours price: Yahoo/);
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': { quote_source_id: 'shoonya' } } });
+        assert.match(await legend.getAttribute('title'), /Live quotes: Shoonya/, 'source-only metadata changes invalidate the legend cache');
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': { history_delay_seconds: 0 } } });
+        assert.doesNotMatch(await legend.getAttribute('title'), /15m delayed/, 'history-delay-only changes invalidate the legend cache');
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': { history_fallback: false } } });
+        assert.doesNotMatch(await legend.textContent(), /\bH\b/, 'fallback-only changes invalidate the legend cache');
+        await page.locator('#source-select').selectOption('yahoo');
+        await page.waitForFunction(() => !document.querySelector('#source-select').disabled && document.querySelector('#source-select').value === 'yahoo');
+        await emit(comparisonSnapshot(TODAY, 25));
+        assert.doesNotMatch(await legend.textContent(), /\bH\b/, 'switching sources clears the previous fallback provenance');
+        assert.doesNotMatch(await legend.getAttribute('title'), /Live quotes: Shoonya/);
+      } finally {
+        releaseSourceRequest();
+        if (await page.evaluate(() => Boolean(replay))) await page.locator('#replay').click();
+        await page.waitForFunction(() => !document.querySelector('#source-select').disabled);
+        if (await page.locator('#source-select').inputValue() !== 'yahoo') {
+          await page.locator('#source-select').selectOption('yahoo');
+          await page.waitForFunction(() => !document.querySelector('#source-select').disabled && document.querySelector('#source-select').value === 'yahoo');
+        }
+        await page.evaluate(() => { setIntervalMinutes(15); transition = null; });
+        await emit(snapshot(TODAY, 8));
+      }
+    });
+    await check('fresh Shoonya quotes remain isolated beyond delayed FOCIT history until a valid selected bar exists', async () => {
+      const originalNow = await page.evaluate(() => window.__now);
+      try {
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T11:17:00+05:30'); });
+        selectedSource = 'shoonya'; selectedGeneration += 1;
+        const fixture = comparisonSnapshot(TODAY, 7), focit = fixture.instruments['FOCIT.BO'];
+        Object.assign(focit, { history_fallback: true, history_source_id: 'yahoo', quote_source_id: 'shoonya',
+          history_delay_seconds: 900, quote_delay_seconds: 0, comparison_status: 'live',
+          last_tick_time: `${TODAY}T11:17:00+05:30`, current_price: 30090 });
+        const historyBefore = JSON.stringify([focit.candles, focit.candles_5m]);
+        await emit(fixture);
+        const legend = page.locator('#series-labels [data-symbol="FOCIT.BO"]');
+        assert.match(await legend.textContent(), /FOCIT.*\+0\.30%.*H/);
+        assert.match(await legend.getAttribute('title'), /History: Yahoo \(15m delayed\).*Live quotes: Shoonya/);
+        assert.doesNotMatch(await legend.textContent(), /delayed/, 'history delay does not mark the native quote delayed');
+        for (const interval of [15, 5]) {
+          await page.evaluate(interval => { setIntervalMinutes(interval); transition = null; }, interval);
+          const points = await page.evaluate(() => comparisonPoints(view.instruments['FOCIT.BO']));
+          assert.equal(points.length, (interval === 15 ? 7 : 21) + 2);
+          assert.deepEqual(points.at(-1), { time: Date.parse(focit.last_tick_time), quoteTime: Date.parse(focit.last_tick_time),
+            price: 30090, gap: true, quoteOnly: true });
+          const chart = await captureChart(), command = chart.series[4].flatMap(line => line.commands).at(-1);
+          assert.equal(command.method, 'moveTo', 'the native quote never bridges the missing history');
+          assert.ok(Math.abs(command.point[0] - (12 + (chart.width - 88) * 122 / 375)) < .01, 'the separate quote is placed at its observed timestamp');
+        }
+        const activeFive = { ...candle(TODAY, 24, 30080, 30090, 5), symbol: focit.symbol, is_closed: false };
+        const incompleteFifteen = { ...candle(TODAY, 8, 30070, 30090), symbol: focit.symbol, is_closed: false, is_complete: false };
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': {
+          active_candle_5m: activeFive, active_candle: incompleteFifteen
+        } } });
+        assert.equal(await page.evaluate(() => comparisonPoints(view.instruments['FOCIT.BO']).some(point => point.quoteOnly)), false, 'a valid active 5m bar already represents the latest quote');
+        await page.evaluate(() => { setIntervalMinutes(15); transition = null; });
+        assert.equal(await page.evaluate(() => comparisonPoints(view.instruments['FOCIT.BO']).at(-1).quoteOnly), true, 'an incomplete 15m parent cannot hide the separate quote');
+        const guards = await page.evaluate(() => {
+          const instrument = view.instruments['FOCIT.BO'];
+          const quotes = change => comparisonPoints({ ...instrument, ...change }).filter(point => point.quoteOnly);
+          return { stale: quotes({ last_tick_time: `${instrument.date}T11:15:00+05:30` }),
+            yahoo: quotes({ quote_source_id: 'yahoo' }), cutoff: comparisonPoints(instrument, Date.parse(`${instrument.date}T11:16:00+05:30`)).filter(point => point.quoteOnly),
+            validActive: quotes({ active_candle: { ...instrument.active_candle, is_complete: true } }),
+            futureHistory: quotes({ candles: [...instrument.candles, { ...instrument.active_candle, is_closed: true, is_complete: true }], active_candle: null }) };
+        });
+        for (const [key, points] of Object.entries(guards)) assert.deepEqual(points, [], `${key} cannot add a separate native quote`);
+        assert.equal(await page.evaluate(() => JSON.stringify([view.instruments['FOCIT.BO'].candles, view.instruments['FOCIT.BO'].candles_5m])), historyBefore, 'quote display never fabricates candle history');
+        await page.evaluate(() => { window.__now += 60000; });
+        await emit({ type: 'state', date: TODAY, instruments: { 'FOCIT.BO': { last_tick_time: `${TODAY}T11:18:00+05:30`, current_price: 30120 } } });
+        const latest = await page.evaluate(() => comparisonPoints(view.instruments['FOCIT.BO']).at(-1));
+        assert.equal(latest.time, Date.parse(`${TODAY}T11:18:00+05:30`));
+        assert.equal(latest.price, 30120); assert.equal(latest.gap, true);
+      } finally {
+        await page.evaluate(now => { window.__now = now; setIntervalMinutes(15); transition = null; }, originalNow);
+        selectedSource = 'yahoo'; selectedGeneration += 1;
+        await emit(snapshot(TODAY, 8));
+      }
+    });
+    await check('a live-only comparison shows an isolated actual quote without inventing candle history', async () => {
+      const originalNow = await page.evaluate(() => window.__now);
+      try {
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T11:17:00+05:30'); });
+        const fixture = comparisonSnapshot(TODAY, 8), focit = fixture.instruments['FOCIT.BO'];
+        Object.assign(focit, { candles: [], candles_5m: [], active_candle: null, active_candle_5m: null,
+          comparison_status: 'live', last_tick_time: `${TODAY}T11:17:00+05:30`, current_price: 30090 });
+        const primaryBefore = JSON.stringify(fixture.candles);
+        await emit(fixture);
+        const chart = await captureChart(), commands = chart.series[4].flatMap(line => line.commands);
+        assert.equal(commands.length, 2, 'only the opening anchor and observed quote exist');
+        assert.ok(commands.every(command => command.method === 'moveTo'), 'no line connects the opening to an unobserved interval');
+        assert.ok(Math.abs(commands.at(-1).point[0] - (12 + (chart.width - 88) * 122 / 375)) < .01, 'the quote uses its actual 11:17 timestamp');
+        assert.match(await page.locator('#series-labels [data-symbol="FOCIT.BO"]').textContent(), /FOCIT.*\+0\.30/);
+        const actual = await page.evaluate(() => ({ points: comparisonPoints(view.instruments['FOCIT.BO']),
+          candles: view.instruments['FOCIT.BO'].candles, five: view.instruments['FOCIT.BO'].candles_5m,
+          primary: JSON.stringify(view.candles), cutoff: comparisonPoints(view.instruments['FOCIT.BO'], Date.parse('2026-10-05T11:00:00+05:30')) }));
+        assert.equal(actual.points.at(-1).price, 30090); assert.equal(actual.points.at(-1).quoteOnly, true);
+        assert.deepEqual(actual.candles, []); assert.deepEqual(actual.five, []);
+        assert.equal(actual.primary, primaryBefore, 'comparison fallback cannot change primary bars');
+        assert.equal(actual.cutoff.length, 1, 'a replay cutoff never exposes the current quote');
+        const bounds = await page.locator('#chart').boundingBox();
+        await page.mouse.move(bounds.x + commands.at(-1).point[0], bounds.y + 40);
+        assert.match(await page.locator('#series-labels [data-symbol="FOCIT.BO"]').getAttribute('title'), /last quote 11:17/);
+        assert.equal(await page.locator('#chart-inspector').count(), 0, 'a separate live quote needs no floating card');
+        await page.mouse.move(0, 0);
+        await page.locator('#replay').click();
+        const replayChart = await captureChart();
+        assert.equal(replayChart.series[4].flatMap(line => line.points).length, 1, 'quote-only data remains hidden throughout replay');
+        await page.locator('#replay').click();
+        await emit(fixture);
+        const guarded = await page.evaluate(() => {
+          const instrument = view.instruments['FOCIT.BO'];
+          const points = change => comparisonPoints({ ...instrument, ...change }).filter(point => point.quoteOnly);
+          const invalid = { ...view.candles[0], symbol: instrument.symbol, close_is_valid: false };
+          return { stale: points({ last_tick_time: `${instrument.date}T11:15:00+05:30` }),
+            noOpen: points({ session_open: null }), noPrice: points({ current_price: null }),
+            invalidTime: points({ last_tick_time: 'invalid' }), incomplete: points({ candles: [invalid] }),
+            finerHistory: points({ candles_5m: [{ ...view.candles_5m[0], symbol: instrument.symbol }] }),
+            validHistory: points({ candles: [{ ...invalid, close_is_valid: true }] }) };
+        });
+        for (const key of ['stale', 'noOpen', 'noPrice', 'invalidTime', 'validHistory']) assert.deepEqual(guarded[key], [], `${key} cannot invent a quote-only endpoint`);
+        assert.equal(guarded.incomplete.length, 1, 'an invalid historical candle cannot suppress a separate valid current quote');
+        assert.equal(guarded.finerHistory.length, 1, 'a completed 5m bar cannot hide the current quote in the 15m chart');
+      } finally {
+        if (await page.evaluate(() => Boolean(replay))) await page.locator('#replay').click();
+        await page.evaluate(now => { window.__now = now; }, originalNow);
+        await emit(snapshot(TODAY, 8));
+      }
     });
     await check('stale and missing comparison baselines are handled independently for each series', async () => {
       const fixture = comparisonSnapshot();
@@ -1062,11 +1287,11 @@ const server = http.createServer((request, response) => {
       midcap.session_open = null;
       next.session_open = 0;
       await emit(fixture);
-      const legend = await page.locator('#comparison-return').textContent();
+      const legend = await page.locator('#series-labels').textContent();
       assert.match(legend, /BANKNIFTY.*stale/i);
-      assert.match(legend, /MIDCAP SELECT.*unavailable/i);
-      assert.match(legend, /NEXT 50.*unavailable/i);
+      assert.equal(await page.locator('#series-labels [data-symbol="NIFTY_MID_SELECT.NS"], #series-labels [data-symbol="^NSMIDCP"]').count(), 0, 'unplottable baselines have no misplaced endpoint label');
       assert.match(legend, /FIN NIFTY.*0\.19/);
+      await revealComparisons();
       const chart = await captureChart();
       assert.equal(chart.series[0].flatMap(line => line.points).length, 9, 'stale quotes keep native selected history');
       assert.ok(chart.series[0].every(line => line.alpha < chart.series[3][0].alpha), 'stale history is dimmed independently');
@@ -1075,8 +1300,8 @@ const server = http.createServer((request, response) => {
       assert.ok(chart.series[3].length > 0, 'healthy comparison stays visible');
       const stalePrimary = comparisonSnapshot(); stalePrimary.instruments['^NSEI'].comparison_status = 'stale';
       await emit(stalePrimary);
-      assert.match(await page.locator('#primary-return').textContent(), /stale/i);
-      assert.match(await page.locator('#comparison-return').textContent(), /FIN NIFTY.*0\.19/, 'primary freshness does not hide fresh comparison returns');
+      assert.match(await page.locator('#series-labels [data-symbol="^NSEI"]').textContent(), /stale/i);
+      assert.match(await page.locator('#series-labels').textContent(), /FIN NIFTY.*0\.19/, 'primary freshness does not hide fresh comparison returns');
       const noPrimaryOpen = comparisonSnapshot();
       noPrimaryOpen.instruments['^NSEI'].session_open = null;
       await emit(noPrimaryOpen);
@@ -1086,7 +1311,7 @@ const server = http.createServer((request, response) => {
       await emit(delayedPrimary);
       assert.equal((await captureChart()).allComparisons.length, 0, 'a later forming candle cannot invent the primary session open');
       await emit(snapshot(TODAY, 8));
-      assert.match(await page.locator('#comparison-return').textContent(), /unavailable/i);
+      assert.equal(await page.locator('#series-labels button.series-endpoint').count(), 0, 'legacy snapshots have no comparison endpoint controls');
       assert.equal((await captureChart()).allComparisons.length, 0, 'legacy snapshots still render without comparison data');
     });
     await check('invalid and missing selected bars leave gaps only in the affected comparison', async () => {
@@ -1107,7 +1332,7 @@ const server = http.createServer((request, response) => {
       }
       await page.evaluate(() => { setIntervalMinutes(15); transition = null; });
     });
-    await check('replay exposes reached closes for all four comparisons and excludes final quotes from the scale', async () => {
+    await check('replay exposes reached closes for all comparisons and excludes final quotes from the scale', async () => {
       const fixture = comparisonSnapshot(TODAY, 25);
       for (const [symbol, , open] of COMPARISONS) {
         fixture.instruments[symbol].current_price = open * 1.1;
@@ -1133,8 +1358,8 @@ const server = http.createServer((request, response) => {
         const guarded = await page.evaluate(({ instrument, cutoff }) => comparisonPoints(instrument, cutoff).slice(1).map(point => point.quoteTime), { instrument: fixture.instruments['^NSEBANK'], cutoff });
         assert.equal(guarded.length, expected, 'a future close is excluded even when its candle center precedes the replay clock');
         assert.ok(guarded.every(time => time <= cutoff));
-        const legend = await page.locator('#comparison-return').textContent();
-        assert.equal((legend.match(/0\.04/g) || []).length, 4, 'replay returns retain the latest reached native quote');
+        const legend = await page.locator('#series-labels').textContent();
+        assert.equal((legend.match(/0\.04/g) || []).length, COMPARISONS.length, 'replay returns retain the latest reached native quote');
         assert.doesNotMatch(legend, /10\.00/);
         if (interval === 15) {
           const legacy = await page.evaluate(() => {
@@ -1180,8 +1405,7 @@ const server = http.createServer((request, response) => {
         const first = window.__captureChart({ animate: true, now });
         pointer = { x: 12 + (canvas.clientWidth - 88) * 7.5 / 375, y: 40 };
         const middle = window.__captureChart({ animate: true, now: now + 90 });
-        const hover = document.querySelector('#comparison-detail').textContent;
-        const hoverTitles = [...document.querySelectorAll('#comparison-detail .comparison-item')].map(item => item.title);
+        const labels = [...document.querySelectorAll('#series-labels button.series-endpoint')].map(item => ({ text: item.textContent, title: item.title }));
         pointer = null;
         const settled = window.__captureChart({ animate: true, now: now + 1000 });
         const unchanged = JSON.stringify(replay.frame) === canonical;
@@ -1195,7 +1419,7 @@ const server = http.createServer((request, response) => {
           intoMiddle: Math.abs(partial(50).close - partial(49).close),
           outOfMiddle: Math.abs(partial(150).close - partial(149).close) };
         chartMotion.finish(); stopReplay();
-        return { opening, firstReveal, initial, first, middle, settled, unchanged, path, hover, hoverTitles };
+        return { opening, firstReveal, initial, first, middle, settled, unchanged, path, labels };
       });
       const endX = (chart, index) => chart.series[index].flatMap(line => line.points).at(-1)[0];
       const cutoffX = 12 + (result.settled.width - 88) * 7.5 / 375;
@@ -1212,8 +1436,8 @@ const server = http.createServer((request, response) => {
           assert.equal(frame.series[index].flatMap(line => line.commands).filter(command => command.method === 'moveTo').length, 1);
         }
       }
-      assert.equal((result.hover.match(/09:20/g) || []).length, 4, 'hover labels the selected candle bucket during display easing');
-      assert.deepEqual(result.hoverTitles, Array(4).fill('Quote 09:25'), 'actual quote maturity remains available separately');
+      assert.ok(result.labels.every(item => /last quote 09:25/.test(item.title)), 'endpoint metadata identifies the actual reached quote maturity during display easing');
+      assert.equal(await page.locator('#chart-inspector, #comparison-detail').count(), 0, 'replay has no floating inspection card');
       assert.equal(result.unchanged, true, 'replay display motion does not change the replay samples');
       assert.equal(result.path.before, null); assert.equal(result.path.opening.close, 100);
       assert.ok(result.path.early.close > 90 && result.path.early.close < 100);
@@ -1224,6 +1448,167 @@ const server = http.createServer((request, response) => {
       assert.equal(result.path.final.close, 110); assert.equal(result.path.final.is_closed, true);
       assert.ok(result.path.intoTurn < result.path.intoMiddle / 10 && result.path.outOfTurn < result.path.outOfMiddle / 10, 'illustrative candle motion eases into and out of its extrema');
       await page.evaluate(() => { setIntervalMinutes(15); transition = null; });
+    });
+    await check('closed comparison breakouts emphasize either direction and soften the other lines', async () => {
+      const fixture = breakoutSnapshot(10), bank = fixture.instruments['^NSEBANK'];
+      const fin = fixture.instruments['NIFTY_FIN_SERVICE.NS'];
+      const invert = bar => ({ ...bar, symbol: fin.symbol, open: 24000 - (bar.open - 50000) * .48,
+        close: 24000 - (bar.close - 50000) * .48, high: 24048, low: 23952 });
+      fin.candles = bank.candles.map(invert); fin.candles_5m = bank.candles_5m.map(invert);
+      fin.current_price = fin.candles_5m.at(-1).close; fin.last_tick_time = bank.last_tick_time;
+      fin.breakout = neutralBreakout({ range_locked: true, range_high: 24003.84, range_low: 23996.16,
+        direction: 'BEARISH', confirmed_at: fin.last_tick_time, price: fin.current_price });
+      await emit(fixture); await captureChart();
+      const endpoint = symbol => page.locator(`#series-labels [data-symbol="${symbol}"]`);
+      assert.equal(await page.locator('#series-labels').getAttribute('data-qualifying'), '2');
+      assert.equal(await endpoint(bank.symbol).getAttribute('data-direction'), 'BULLISH');
+      assert.equal(await endpoint(fin.symbol).getAttribute('data-direction'), 'BEARISH');
+      for (const symbol of [bank.symbol, fin.symbol]) {
+        assert.equal(await endpoint(symbol).getAttribute('data-emphasis'), 'qualifying');
+        assert.match(await endpoint(symbol).getAttribute('aria-label'), /5m|5.minute|5 minute/i);
+        assert.match(await endpoint(symbol).getAttribute('aria-label'), /45m|45.minute|45 minute/i);
+      }
+      assert.equal(await endpoint('NIFTY_MID_SELECT.NS').getAttribute('data-emphasis'), 'hidden');
+      assert.equal(await endpoint('NIFTY_MID_SELECT.NS').isHidden(), true);
+      const chart = await captureChart();
+      assert.ok(chart.series[0][0].alpha > chart.series[1][0].alpha, 'a qualified line is more prominent than a neutral index');
+      assert.ok(chart.series[0][0].width > chart.series[1][0].width, 'qualification changes the line weight');
+      assert.equal(chart.series[1][0].alpha, 0, 'neutral paths are fully hidden without changing their geometry');
+      assert.deepEqual(await page.evaluate(() => view.instruments['^NSEI'].candles), fixture.instruments['^NSEI'].candles, 'comparison highlighting leaves primary market data intact');
+      await page.screenshot({ path: '/tmp/orb-breakout-qualified.png', fullPage: true });
+    });
+    await check('NIFTY hover and focus reveal neutral indices softly and leaving restores the idle view', async () => {
+      const primary = page.locator('#series-labels [data-primary="true"]');
+      const neutral = page.locator('#series-labels [data-symbol="NIFTY_MID_SELECT.NS"]');
+      await page.mouse.move(0, 0);
+      assert.equal(await neutral.isHidden(), true);
+      await revealComparisons();
+      assert.equal(await neutral.isVisible(), true);
+      assert.equal(await neutral.getAttribute('data-emphasis'), 'revealed');
+      const revealed = await captureChart();
+      assert.equal(revealed.series[1][0].alpha, .32);
+      assert.match(revealed.series[1][0].filter, /blur/);
+      assert.equal(revealed.series[0][0].alpha, .95, 'breakout indices remain crisp during the NIFTY reveal');
+      assert.equal(revealed.series[0][0].filter, 'none');
+      await page.screenshot({ path: '/tmp/orb-primary-reveal.png', fullPage: true });
+      await page.mouse.move(0, 0);
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'false');
+      assert.equal(await neutral.isHidden(), true);
+      await primary.focus();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'true');
+      assert.equal(await neutral.isVisible(), true, 'keyboard focus offers the same reveal');
+      await page.locator('#comparison-toggle').focus();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'false');
+      await page.locator('.instrument').hover();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'true');
+      await page.mouse.move(0, 0);
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'false');
+      const chart = await captureChart(), box = await page.locator('#chart').boundingBox(), candle = chart.bodies.at(-1);
+      await page.mouse.move(box.x + candle.x + candle.w / 2, box.y + candle.y + candle.h / 2);
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'true');
+      assert.equal(await neutral.isVisible(), true, 'hovering a NIFTY candle reveals neutral indices');
+      await page.mouse.move(0, 0);
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.reveal === 'false');
+    });
+    await check('hover and keyboard focus isolate a qualified endpoint and restore the other indices', async () => {
+      const endpoint = page.locator('#series-labels [data-symbol="^NSEBANK"]');
+      await endpoint.hover();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.focused === '^NSEBANK');
+      assert.equal(await endpoint.getAttribute('data-emphasis'), 'focused');
+      assert.equal(await page.locator('#series-labels [data-symbol="NIFTY_FIN_SERVICE.NS"]').getAttribute('data-emphasis'), 'muted');
+      const isolated = await captureChart();
+      assert.ok(isolated.series[3].every(line => line.alpha <= .06 && /blur\(3/.test(line.filter)), 'hover deeply softens even the other qualified index');
+      await page.screenshot({ path: '/tmp/orb-breakout-focused.png', fullPage: true });
+      await page.mouse.move(0, 0);
+      await page.waitForFunction(() => !document.querySelector('#series-labels').dataset.focused);
+      assert.equal(await endpoint.getAttribute('data-emphasis'), 'qualifying');
+      const paths = await captureChart(), chartBox = await page.locator('#chart').boundingBox();
+      const tip = paths.series[0][0].points.at(-1);
+      await page.mouse.move(chartBox.x + tip[0], chartBox.y + tip[1]);
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.focused === '^NSEBANK');
+      assert.equal(await endpoint.getAttribute('data-emphasis'), 'focused', 'hovering the qualified line itself also isolates it');
+      await page.mouse.move(0, 0);
+      await page.waitForFunction(() => !document.querySelector('#series-labels').dataset.focused);
+      await endpoint.focus();
+      await page.waitForFunction(() => document.querySelector('#series-labels').dataset.focused === '^NSEBANK');
+      assert.equal(await endpoint.evaluate(element => element === document.activeElement), true, 'the endpoint is keyboard reachable');
+      await page.evaluate(() => { window.__focusedEndpoint = document.activeElement; });
+      await emit({ type: 'state', date: TODAY, instruments: { '^NSEBANK': { current_price: 50013 } } });
+      assert.equal(await page.evaluate(() => document.activeElement === window.__focusedEndpoint), true, 'quote updates retain the focused endpoint node');
+      assert.equal(await endpoint.getAttribute('data-emphasis'), 'focused');
+      await page.locator('#comparison-toggle').focus();
+      await page.waitForFunction(() => !document.querySelector('#series-labels').dataset.focused);
+      assert.equal(await endpoint.getAttribute('data-emphasis'), 'qualifying');
+      assert.equal(await page.locator('#series-labels [data-symbol="NIFTY_MID_SELECT.NS"]').isHidden(), true, 'neutral labels cannot intercept idle chart hover');
+      await page.mouse.move(0, 0);
+      await page.locator('#comparison-toggle').click();
+      assert.equal(await page.locator('#series-labels button.series-endpoint').count(), 0, 'hiding derivatives removes their interactive labels');
+      await page.locator('#comparison-toggle').click();
+      await emit(comparisonSnapshot());
+      assert.equal(await page.locator('#series-labels').getAttribute('data-qualifying'), '0');
+      assert.ok((await captureChart()).series.every(lines => lines.every(line => line.alpha === 0)), 'neutral comparisons remain hidden before any breakout');
+    });
+    await check('ticks and forming comparison candles do not confirm a close-only breakout', async () => {
+      const originalNow = await page.evaluate(() => window.__now);
+      try {
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T10:04:59+05:30'); });
+        const fixture = breakoutSnapshot(9), bank = fixture.instruments['^NSEBANK'];
+        fixture.market_status = 'live';
+        bank.comparison_status = 'live'; bank.current_price = 60000; bank.last_tick_time = `${TODAY}T10:04:59+05:30`;
+        bank.active_candle_5m = { ...candle(TODAY, 9, 49992, 60000, 5), symbol: bank.symbol, is_closed: false };
+        await emit(fixture);
+        const endpoint = page.locator('#series-labels [data-symbol="^NSEBANK"]');
+        assert.equal(await endpoint.getAttribute('data-emphasis'), 'hidden');
+        await emit({ type: 'state', date: TODAY, instruments: { '^NSEBANK': { current_price: 61000,
+          active_candle_5m: { ...bank.active_candle_5m, close: 61000 } } } });
+        assert.equal(await endpoint.getAttribute('data-emphasis'), 'hidden', 'an out-of-range live price is not a closed confirmation');
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T10:05:00+05:30'); });
+        const confirmed = breakoutSnapshot(10).instruments['^NSEBANK'];
+        confirmed.comparison_status = 'live';
+        await emit({ type: 'state', date: TODAY, instruments: { '^NSEBANK': confirmed } });
+        assert.equal(await endpoint.getAttribute('data-direction'), 'BULLISH');
+        assert.equal(await endpoint.getAttribute('data-emphasis'), 'qualifying');
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T10:06:31+05:30'); render(); });
+        assert.equal(await endpoint.getAttribute('data-direction'), 'none', 'a stale quote cannot keep a confirmed index emphasized');
+        assert.equal(await endpoint.getAttribute('data-status'), 'stale');
+        const inside = breakoutSnapshot(11).instruments['^NSEBANK'];
+        inside.comparison_status = 'live'; inside.last_tick_time = `${TODAY}T10:10:00+05:30`;
+        await page.evaluate(() => { window.__now = Date.parse('2026-10-05T10:10:00+05:30'); });
+        await emit({ type: 'state', date: TODAY, instruments: { '^NSEBANK': inside } });
+        assert.equal(await endpoint.getAttribute('data-emphasis'), 'hidden', 'a later closed candle on the boundary clears qualification');
+      } finally {
+        await page.evaluate(now => { window.__now = now; }, originalNow);
+        await emit(comparisonSnapshot());
+      }
+    });
+    await check('comparison replay uses nine opening closes and only reached valid closed five-minute confirmations', async () => {
+      const fixture = breakoutSnapshot(13);
+      await emit(fixture); await page.locator('#replay').click();
+      try {
+        const reached = async clock => page.evaluate(clock => {
+          replay.time = Date.parse(`${selectedDate}T${clock}+05:30`); replay.complete = true;
+          replay.frame = replayView(replay.time); render(performance.now());
+          return replay.frame.instruments['^NSEBANK'].breakout;
+        }, clock);
+        const before = await reached('09:59:59');
+        assert.equal(before.range_locked, false); assert.equal(before.direction, null);
+        const opening = await reached('10:00:00');
+        assert.equal(opening.range_locked, true);
+        assert.equal(opening.range_high, 50008); assert.equal(opening.range_low, 49992, 'opening wick extremes do not become breakout boundaries');
+        assert.equal(opening.direction, null);
+        assert.equal((await reached('10:04:59')).direction, null, 'the incomplete confirmation cannot qualify');
+        const bullish = await reached('10:05:00');
+        assert.equal(bullish.direction, 'BULLISH'); assert.equal(bullish.confirmed_at, `${TODAY}T10:05:00+05:30`);
+        assert.equal(await page.locator('#series-labels [data-symbol="^NSEBANK"]').getAttribute('data-emphasis'), 'qualifying');
+        assert.equal((await reached('10:10:00')).direction, null, 'an exact opening close boundary is neutral');
+        assert.equal((await reached('10:15:00')).direction, 'BEARISH');
+        assert.equal((await reached('10:20:00')).direction, null, 'a return inside the opening closes clears qualification');
+        await page.evaluate(() => { replay.snapshot.instruments['^NSEBANK'].candles_5m[9].close_is_valid = false; });
+        assert.equal((await reached('10:05:00')).direction, null, 'invalid historical confirmation closes never qualify');
+        await page.evaluate(() => { replay.snapshot.instruments['^NSEBANK'].candles_5m[9].close_is_valid = true; replay.snapshot.instruments['^NSEBANK'].candles_5m[4].is_complete = false; });
+        const missingOpening = await reached('10:05:00');
+        assert.equal(missingOpening.range_locked, false); assert.equal(missingOpening.direction, null, 'incomplete opening coverage never invents a range');
+      } finally { await page.locator('#replay').click(); await emit(comparisonSnapshot()); }
     });
     await check('dark theme has readable text and survives reloading', async () => {
       await page.locator('#theme-toggle').click();
@@ -1250,12 +1635,14 @@ const server = http.createServer((request, response) => {
     const chartFixture = comparisonSnapshot(TODAY, 25, {}, { signals: [{ timestamp: breakout.end_time, direction: 'BULLISH', price: breakout.close }] });
     for (const [index, [symbol, , open]] of COMPARISONS.entries()) {
       const instrument = chartFixture.instruments[symbol];
-      const movement = [.006, -.002, .0035, -.0045][index];
+      const movement = [.006, -.002, .0035, -.0045, .002][index];
       for (const bars of [instrument.candles, instrument.candles_5m]) for (const bar of bars) {
         const minute = (Date.parse(bar.end_time) - Date.parse(`${TODAY}T09:15:00+05:30`)) / 60000;
         bar.close = open * (1 + movement * minute / 375 + Math.sin(minute / 40 + index) * .00025);
       }
       instrument.current_price = instrument.candles_5m.at(-1).close;
+      instrument.breakout = neutralBreakout({ range_locked: true, direction: movement > 0 ? 'BULLISH' : 'BEARISH',
+        confirmed_at: instrument.last_tick_time, price: instrument.current_price });
     }
     chartFixture.setups['15'].signals = [{ timestamp: breakout.end_time, direction: 'BULLISH', price: breakout.close }];
     chartFixture.setups['5'].signals = [{ timestamp: chartFixture.candles_5m[40].end_time, direction: 'BULLISH', price: chartFixture.candles_5m[40].close }];
@@ -1279,20 +1666,35 @@ const server = http.createServer((request, response) => {
         for (const interval of ['15m', '5m']) {
           await page.locator(`#interval-${interval}`).click();
           await page.waitForTimeout(500);
-          assert.ok((await captureChart()).series.every(lines => lines.length > 0), `${name} ${theme} ${interval} screenshot includes all four comparisons`);
+          assert.ok((await captureChart()).series.every(lines => lines.length > 0), `${name} ${theme} ${interval} screenshot includes all comparisons`);
           await page.screenshot({ path: `/tmp/orb-${name}-${theme}-${interval}.png`, fullPage: true });
         }
       }
       await page.locator('#interval-15m').click();
       await page.waitForTimeout(500);
-      await check(`${name} hover inspector contains four comparison values within the chart`, async () => {
+      await check(`${name} endpoint labels remain readable within the chart without hover cards`, async () => {
         const chart = await page.locator('#chart').boundingBox();
-        await page.mouse.move(chart.x + (chart.width - 88) * .42, chart.y + chart.height * .4);
-        await page.waitForFunction(() => document.querySelectorAll('#comparison-detail .comparison-item').length === 4);
-        const inspector = await page.locator('#chart-inspector').boundingBox();
-        assert.ok(inspector.x >= chart.x && inspector.x + inspector.width <= chart.x + chart.width + .01, 'inspector fits the chart width');
-        assert.ok(inspector.y >= chart.y && inspector.y + inspector.height <= chart.y + chart.height + .01, 'inspector fits the chart height');
-        await page.screenshot({ path: `/tmp/orb-${name}-inspector.png`, fullPage: true });
+        await revealComparisons();
+        const labels = await page.locator('#series-labels .series-endpoint').evaluateAll(items => items.map(item => {
+          const box = item.getBoundingClientRect();
+          const style = getComputedStyle(item);
+          return { symbol: item.dataset.symbol, primary: item.dataset.primary === 'true', x: box.x, y: box.y, width: box.width, height: box.height,
+            label: item.getAttribute('aria-label'), color: style.color, background: style.backgroundColor, halo: style.boxShadow };
+        }));
+        assert.equal(labels.length, COMPARISONS.length + 1, 'primary and comparison labels are present');
+        for (const label of labels) {
+          assert.ok(label.x >= chart.x - .01 && label.x + label.width <= chart.x + chart.width + .01, `${label.symbol} fits the chart width`);
+          assert.ok(label.y >= chart.y - .01 && label.y + label.height <= chart.y + chart.height + .01, `${label.symbol} fits the chart height`);
+          assert.ok(label.label && label.label.includes('%'), `${label.symbol} has an accessible return`);
+          assert.notEqual(label.background, 'rgba(0, 0, 0, 0)', `${label.symbol} masks chart strokes beneath its text`);
+          assert.notEqual(label.halo, 'none', `${label.symbol} has clearance around its text`);
+        }
+        const primary = labels.find(label => label.primary);
+        assert.ok(primary.x >= chart.x + chart.width - 76, 'NIFTY text stays entirely in the price-axis margin');
+        const ordered = labels.filter(label => !label.primary).sort((a, b) => a.y - b.y);
+        for (let i = 1; i < ordered.length; i++) assert.ok(ordered[i].y >= ordered[i - 1].y + ordered[i - 1].height - .01, 'collision handling leaves each label a separate row');
+        assert.equal(await page.locator('#chart-inspector, #comparison-detail, #primary-return, #comparison-return').count(), 0);
+        await page.screenshot({ path: `/tmp/orb-${name}-endpoints.png`, fullPage: true });
         await page.mouse.move(0, 0);
       });
     }

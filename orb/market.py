@@ -19,6 +19,9 @@ class Instrument:
     label: str
     shoonya_token: str
     yahoo_symbol: str
+    shoonya_exchange: str = "NSE"
+    yahoo_delay_minutes: int = 0
+    shoonya_history_fallback: str | None = None
 
 
 INSTRUMENTS = {item.symbol: item for item in (
@@ -28,6 +31,9 @@ INSTRUMENTS = {item.symbol: item for item in (
     Instrument("^NSMIDCP", "NIFTY NEXT 50", "26013", "^NSMIDCP"),
     # Yahoo's ^CNXFIN is the distinct Financial Services 25/50 index.
     Instrument("NIFTY_FIN_SERVICE.NS", "FIN NIFTY", "26037", "NIFTY_FIN_SERVICE.NS"),
+    # Shoonya GetIndexList uses token 75; Yahoo publishes this index 15 minutes late.
+    Instrument("FOCIT.BO", "FOCIT", "75", "FOCIT.BO", shoonya_exchange="BSE",
+               yahoo_delay_minutes=15, shoonya_history_fallback="yahoo"),
 )}
 QUOTE_MAX_AGE = timedelta(seconds=90)
 HISTORY_DAYS = 60
@@ -72,6 +78,7 @@ class InstrumentState:
         self._saved_content = {}
         self.on_close = on_close
         self.source_id = "yahoo"
+        self._source_opens = {self.source_id: {}}
         self.sessions, self.sessions_5m = {}, {}
         self.reset(in_ist(now()).date().isoformat())
         self._load_sessions()
@@ -79,13 +86,26 @@ class InstrumentState:
         self._source_sessions = {self.source_id: (self.sessions, self.sessions_5m, self.cache_dir,
                                                   self._source_history_ready, self.date)}
 
+    @property
+    def quote_delay(self):
+        return timedelta(minutes=self.instrument.yahoo_delay_minutes if self.source_id == "yahoo" else 0)
+
+    def market_time(self, now=None):
+        """The source's current market clock, distinct from arrival and retention time."""
+        return in_ist(now if now is not None else self.now()) - self.quote_delay
+
+    @property
+    def session_opens(self):
+        return self._source_opens.setdefault(self.source_id, {})
+
     def reset(self, session_date, *, save=True):
         if save:
             self._save_session()
         self.date = session_date
         self.candles, self.candles_5m = [], []
         self.active_candle = self.active_candle_5m = None
-        self.current_price = self.last_tick_time = self.history_coverage_time = self.session_open = None
+        self.current_price = self.last_tick_time = self.history_coverage_time = None
+        self.session_open = self.session_opens.get(session_date)
 
     def activate_source(self, source):
         self._save_session()
@@ -136,6 +156,23 @@ class InstrumentState:
                     self._saved_content[path] = hashlib.sha256(content.encode()).digest()
                 except (OSError, ValueError, TypeError, KeyError):
                     print(f"Could not load saved session: {path.name}", file=sys.stderr)
+        for path in sorted((self.cache_dir / "opens").glob("????-??-??.json")):
+            if path.stem < cutoff:
+                continue
+            try:
+                metadata = json.loads(path.read_text())
+                opening = float(metadata["session_open"])
+                timestamp = in_ist(datetime.fromisoformat(metadata["timestamp"]))
+                if (metadata["symbol"] == self.instrument.symbol and metadata["source_id"] == self.source_id
+                        and timestamp.date().isoformat() == path.stem
+                        and dtime(9, 15) <= timestamp.time() < dtime(15, 30)
+                        and math.isfinite(opening) and opening > 0):
+                    self.session_opens[path.stem] = opening
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
+                print(f"Could not load saved opening: {path.name}", file=sys.stderr)
+        self.session_open = (self.opening_price(self.sessions_5m.get(self.date, []))
+                             or self.opening_price(self.sessions.get(self.date, []))
+                             or self.session_opens.get(self.date))
 
     def prune_history(self, cutoff):
         for saved in self._source_sessions.values():
@@ -143,6 +180,10 @@ class InstrumentState:
                 for day in list(sessions):
                     if day < cutoff:
                         del sessions[day]
+        for openings in self._source_opens.values():
+            for day in list(openings):
+                if day < cutoff:
+                    del openings[day]
         self._saved_content = {path: digest for path, digest in self._saved_content.items()
                                if path.stem >= cutoff}
 
@@ -184,7 +225,7 @@ class InstrumentState:
             raise ValueError("Use 5- or 15-minute candles.")
         if interval_minutes == 5:
             return self._seed_5m(candles)
-        now = in_ist(self.now())
+        now = self.market_time()
         grouped = {}
         for candle in self._history_items(candles, interval_minutes, now):
             day = candle.start_time.date().isoformat()
@@ -212,13 +253,14 @@ class InstrumentState:
                                      if c.start_time <= now < c.end_time), None)
         if self.active_candle_5m:
             self.history_coverage_time = now
-        self.session_open = self.opening_price(current_five or current)
+        self.session_open = (self.opening_price(current_five) or self.opening_price(current)
+                             or self.session_opens.get(self.date))
         if current_five:
             self.current_price = current_five[-1].close
         self._save_session()
 
     def _history_items(self, candles, interval, now):
-        cutoff = history_cutoff(now)
+        cutoff = history_cutoff(self.now())
         for candle in candles:
             start, end = in_ist(candle.start_time), in_ist(candle.end_time)
             opening = start.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -234,7 +276,7 @@ class InstrumentState:
                           slot=int((start - opening).total_seconds() // (interval * 60)))
 
     def _seed_5m(self, candles, *, session_date=None):
-        now = in_ist(self.now())
+        now = self.market_time()
         grouped = {}
         for item in self._history_items(candles, 5, now):
             grouped.setdefault(item.start_time.date().isoformat(), {})[item.start_time] = item
@@ -301,7 +343,7 @@ class InstrumentState:
         return closed
 
     def process_tick(self, price, vol=0, tick_time=None):
-        now = in_ist(self.now())
+        now = self.market_time()
         tick_time = in_ist(tick_time or now)
         if not math.isfinite(price) or price <= 0:
             return False
@@ -353,12 +395,44 @@ class InstrumentState:
             self.session_open = price
         return True
 
+    def set_session_open(self, opening, timestamp):
+        """Accept an upstream session open without inventing an opening candle."""
+        try:
+            opening = float(opening)
+            timestamp = in_ist(timestamp)
+        except (TypeError, ValueError, AttributeError, OverflowError):
+            return False
+        actual_now = in_ist(self.now())
+        if (not math.isfinite(opening) or opening <= 0 or self.session_open is not None
+                or timestamp.date() != actual_now.date() or timestamp.date().isoformat() != self.date
+                or not dtime(9, 15) <= timestamp.time() < dtime(15, 30)
+                or not timedelta(0) <= self.market_time(actual_now) - timestamp <= QUOTE_MAX_AGE):
+            return False
+        self.session_open = opening
+        self.session_opens[self.date] = opening
+        if self.cache_dir:
+            path = self.cache_dir / "opens" / f"{self.date}.json"
+            temp = path.with_suffix(".tmp")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temp.write_text(json.dumps({"symbol": self.instrument.symbol, "source_id": self.source_id,
+                                            "session_open": opening, "timestamp": timestamp.isoformat()}))
+                temp.replace(path)
+            except OSError:
+                try:
+                    temp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                print(f"Could not save session opening: {path.name}", file=sys.stderr)
+        return True
+
     @staticmethod
     def opening_price(candles):
         return next((c.open for c in candles if c.start_time.time() == dtime(9, 15)
                      and c.is_complete and c.close_is_valid and math.isfinite(c.open) and c.open > 0), None)
 
     def snapshot(self, now, feed_status, session_date=None, *, include_history=True):
+        now = self.market_time(now)
         historical = session_date is not None and session_date != self.date
         candles = self.sessions.get(session_date, []) if historical else self.candles
         five = self.sessions_5m.get(session_date, []) if historical else self.candles_5m
@@ -367,7 +441,8 @@ class InstrumentState:
         price = (five or candles)[-1].close if historical and (five or candles) else self.current_price
         if historical and not (five or candles):
             price = None
-        opening = self.opening_price(five or candles) if historical else self.session_open
+        opening = (self.opening_price(five) or self.opening_price(candles) or self.session_opens.get(session_date)
+                   if historical else self.session_open)
         tick_time = None if historical else self.last_tick_time
         coverage_time = None if historical else self.history_coverage_time
         offmarket = historical or now.weekday() >= 5 or not dtime(9, 15) <= now.time() < dtime(15, 30)
@@ -380,14 +455,16 @@ class InstrumentState:
             status = "closed"
         else:
             fresh = tick_time and timedelta(0) <= now - tick_time <= QUOTE_MAX_AGE
-            status = "live" if fresh and feed_status not in ("connecting", "disconnected", "error") else "stale"
+            status = ("delayed" if self.quote_delay else "live") if (
+                fresh and feed_status not in ("connecting", "disconnected", "error")) else "stale"
         snapshot = {"symbol": self.instrument.symbol, "label": self.instrument.label, "date": session_date or self.date,
                 "active_candle": active.to_dict() if active else None,
                 "active_candle_5m": active_five.to_dict() if active_five else None,
                 "current_price": price, "last_tick_time": tick_time.isoformat() if tick_time else None,
                 "history_coverage_time": coverage_time.isoformat() if coverage_time else None,
                 "session_open": opening, "change_pct": (price / opening - 1) * 100
-                if status in ("live", "closed") else None, "comparison_status": status}
+                if status in ("live", "delayed", "closed") else None, "comparison_status": status,
+                "quote_delay_seconds": int(self.quote_delay.total_seconds())}
         if include_history:
             snapshot.update(candles=[c.to_dict() for c in candles],
                             candles_5m=[c.to_dict() for c in five])
