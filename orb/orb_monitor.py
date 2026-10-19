@@ -40,9 +40,9 @@ class ConfluenceSignal(Signal):
 class DualORBState:
     """Keep each chart's arrows separate from agreement between latest closes."""
 
-    def __init__(self, strategy=None):
+    def __init__(self):
         self.strategies = {
-            "15": strategy or OpeningRangeBreakoutStrategy(range_minutes=30, confirmation_minutes=15),
+            "15": OpeningRangeBreakoutStrategy(range_minutes=30, confirmation_minutes=15),
             "5": OpeningRangeBreakoutStrategy(range_minutes=45, confirmation_minutes=5),
         }
         self.reset_day()
@@ -104,9 +104,7 @@ class DualORBState:
 
 
 def _primary_field(name):
-    """Preserve the original hub's public primary chart attributes."""
-    return property(lambda hub: getattr(hub.instruments[PRIMARY_SYMBOL], name),
-                    lambda hub, value: setattr(hub.instruments[PRIMARY_SYMBOL], name, value))
+    return property(lambda hub: getattr(hub.instruments[PRIMARY_SYMBOL], name))
 
 
 class MonitorHub:
@@ -120,8 +118,8 @@ class MonitorHub:
     current_price = _primary_field("current_price")
     last_tick_time = _primary_field("last_tick_time")
 
-    def __init__(self, strategy=None, *, now=None, cache_dir=None, notifier=None):
-        self.breakouts = DualORBState(strategy)
+    def __init__(self, *, now=None, cache_dir=None, notifier=None):
+        self.breakouts = DualORBState()
         self.strategy = self.breakouts.strategies["15"]
         self.strategy_5m = self.breakouts.strategies["5"]
         self.now = now or (lambda: datetime.now(IST))
@@ -474,7 +472,7 @@ class MonitorHub:
             state = self.instruments[symbol]
             if not state.process_tick(price, vol, tick_time):
                 return False
-            if session_open is not None and symbol != PRIMARY_SYMBOL:
+            if session_open is not None:
                 state.set_session_open(session_open, state.last_tick_time)
             if self.feed_status == "waiting":
                 self.feed_status = "live"

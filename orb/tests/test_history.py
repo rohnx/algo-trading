@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from market import PRIMARY_SYMBOL
+from market import INSTRUMENTS, PRIMARY_SYMBOL
 from orb_monitor import MonitorHub
 from test_features import Clock, at, bar
 
@@ -35,6 +35,36 @@ class FallbackHistoryTests(unittest.TestCase):
 
     def seed(self, candles=None):
         return self.hub.seed_fallback_history(history() if candles is None else candles, symbol=FOCIT)
+
+    def test_all_sectors_compose_yahoo_history_with_native_quotes_without_changing_nifty(self):
+        self.clock.value = at(10, 6)
+        primary_before = self.hub.snapshot()["instruments"][PRIMARY_SYMBOL]
+        for symbol, instrument in INSTRUMENTS.items():
+            if instrument.comparison_group != "sectors":
+                continue
+            with self.subTest(symbol=symbol):
+                backfill = [replace(candle, symbol=symbol) for candle in history(10)]
+                native = [replace(candle, symbol=symbol) for candle in history(10, price=800)[9:]]
+                self.hub.seed_historical_candles(native, 5, symbol=symbol)
+                self.hub.process_tick(900, symbol=symbol, session_open=700)
+                native_before = self.hub.instruments[symbol].snapshot(self.clock(), "live")
+                self.assertTrue(self.hub.seed_fallback_history(backfill, symbol=symbol))
+                state = self.hub.snapshot()["instruments"][symbol]
+                self.assertEqual(state["comparison_group"], "sectors")
+                self.assertTrue(state["history_fallback"])
+                self.assertEqual(state["history_source_id"], "yahoo")
+                self.assertEqual(state["history_delay_seconds"], 0)
+                self.assertEqual(state["quote_source_id"], "shoonya")
+                self.assertEqual(state["quote_delay_seconds"], 0)
+                self.assertEqual(state["current_price"], 900)
+                self.assertEqual(state["last_tick_time"], at(10, 6).isoformat())
+                self.assertEqual(len(state["candles_5m"]), 10)
+                self.assertEqual(state["candles_5m"][-1]["close"], native[-1].close)
+                self.assertEqual(state["breakout"]["direction"], "BULLISH")
+                self.assertEqual(state["breakout"]["range_high"], 509)
+                self.assertEqual(self.hub.instruments[symbol].snapshot(self.clock(), "live"), native_before)
+        self.assertEqual(self.hub.snapshot()["instruments"][PRIMARY_SYMBOL], primary_before)
+        self.assertEqual(self.hub.signals, [])
 
     def test_after_hours_fallback_supplies_full_session_in_both_intervals(self):
         primary_before = self.hub.snapshot()["instruments"][PRIMARY_SYMBOL]
@@ -100,6 +130,23 @@ class FallbackHistoryTests(unittest.TestCase):
         self.assertFalse(result["candles"][-1]["is_complete"])
         self.assertFalse(result["candles"][-1]["close_is_valid"])
 
+    def test_incomplete_native_parent_does_not_replace_valid_child_aggregate(self):
+        self.clock.value = at(10, 12)
+        self.hub.advance_time()
+        self.hub.seed_historical_candles(history(12, price=600)[9:], 5, symbol=FOCIT)
+        self.hub.process_tick(700, symbol=FOCIT, session_open=600)
+        native = self.hub.instruments[FOCIT]
+        native.active_candle.is_complete = False
+        native.active_candle.close_is_valid = False
+        self.seed(history(12))
+        result = self.focit()
+        self.assertTrue(result["active_candle"]["is_complete"])
+        self.assertTrue(result["active_candle"]["close_is_valid"])
+        self.assertEqual(result["active_candle"]["close"], 700)
+        self.assertEqual(result["quote_source_id"], "shoonya")
+        self.assertFalse(native.active_candle.is_complete, "composition cannot alter native bar validity")
+        self.assertFalse(native.active_candle.close_is_valid)
+
     def test_missing_five_minute_children_remain_invalid_fifteen_minute_gaps(self):
         candles = history(9)
         self.seed([item for item in candles if item.slot != 4])
@@ -110,6 +157,30 @@ class FallbackHistoryTests(unittest.TestCase):
         self.assertFalse(result["candles"][1]["is_complete"])
         self.assertFalse(result["candles"][1]["close_is_valid"])
         self.assertTrue(result["candles"][2]["is_complete"])
+
+    def test_later_backfill_repairs_the_handoff_gap_without_replacing_live_prices(self):
+        self.clock.value = at(10, 12)
+        self.hub.advance_time()
+        self.hub.process_tick(700, symbol=FOCIT, session_open=600)
+        self.seed(history(12))
+        initial = self.focit()
+        self.assertNotIn(at(10, 0).isoformat(), [c["start_time"] for c in initial["candles_5m"]])
+        for minute in range(1, 24):
+            self.clock.value = at(10, 12) + timedelta(minutes=minute)
+            self.hub.process_tick(700 + minute, symbol=FOCIT)
+        native = self.hub.instruments[FOCIT].snapshot(self.clock(), "live")
+        self.seed(history(13))
+        result = self.focit()
+        self.assertIn(at(10, 0).isoformat(), [c["start_time"] for c in result["candles_5m"]])
+        self.assertEqual(result["current_price"], 723)
+        self.assertEqual(result["last_tick_time"], at(10, 35).isoformat())
+        self.assertEqual(result["quote_source_id"], "shoonya")
+        self.assertEqual(result["active_candle_5m"], native["active_candle_5m"])
+        native_valid = {c["start_time"]: c for c in native["candles_5m"] if c["is_complete"] and c["close_is_valid"]}
+        for candle in result["candles_5m"]:
+            if candle["start_time"] in native_valid:
+                self.assertEqual(candle, native_valid[candle["start_time"]])
+        self.assertEqual(self.hub.instruments[FOCIT].snapshot(self.clock(), "live"), native)
 
     def test_valid_native_bars_win_and_invalid_native_bars_use_valid_fallback(self):
         native = history(6, price=800)

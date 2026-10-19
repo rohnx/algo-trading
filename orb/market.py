@@ -22,10 +22,11 @@ class Instrument:
     shoonya_exchange: str = "NSE"
     yahoo_delay_minutes: int = 0
     shoonya_history_fallback: str | None = None
+    comparison_group: str = "derivatives"
 
 
 INSTRUMENTS = {item.symbol: item for item in (
-    Instrument(PRIMARY_SYMBOL, "NIFTY 50", "26000", "^NSEI"),
+    Instrument(PRIMARY_SYMBOL, "NIFTY 50", "26000", "^NSEI", comparison_group="primary"),
     Instrument("^NSEBANK", "BANKNIFTY", "26009", "^NSEBANK"),
     Instrument("NIFTY_MID_SELECT.NS", "MIDCAP SELECT", "26074", "NIFTY_MID_SELECT.NS"),
     Instrument("^NSMIDCP", "NIFTY NEXT 50", "26013", "^NSMIDCP"),
@@ -34,6 +35,38 @@ INSTRUMENTS = {item.symbol: item for item in (
     # Shoonya GetIndexList uses token 75; Yahoo publishes this index 15 minutes late.
     Instrument("FOCIT.BO", "FOCIT", "75", "FOCIT.BO", shoonya_exchange="BSE",
                yahoo_delay_minutes=15, shoonya_history_fallback="yahoo"),
+    # These NSE index tokens support quotes. The October provider audit found
+    # no native intraday history, so retain a separate Yahoo backfill view.
+    Instrument("^CNXPHARMA", "PHARMA", "26023", "^CNXPHARMA",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXAUTO", "AUTO", "26029", "^CNXAUTO",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXFMCG", "FMCG", "26021", "^CNXFMCG",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXMETAL", "METAL", "26030", "^CNXMETAL",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXPSUBANK", "PSU BANK", "26025", "^CNXPSUBANK",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXREALTY", "REALTY", "26018", "^CNXREALTY",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("NIFTY_CONSR_DURBL.NS", "CONSUMER DURABLES", "26070", "NIFTY_CONSR_DURBL.NS",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("NIFTY_OIL_AND_GAS.NS", "OIL & GAS", "26071", "NIFTY_OIL_AND_GAS.NS",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("NIFTY_PVT_BANK.NS", "PRIVATE BANK", "26047", "NIFTY_PVT_BANK.NS",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXENERGY", "ENERGY", "26020", "^CNXENERGY",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("NIFTY_IND_DEFENCE.NS", "INDIA DEFENCE", "26092", "NIFTY_IND_DEFENCE.NS",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXINFRA", "INFRASTRUCTURE", "26019", "^CNXINFRA",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXPSE", "PSE", "26024", "^CNXPSE",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("^CNXCMDT", "COMMODITIES", "26035", "^CNXCMDT",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
+    Instrument("NIFTY_CPSE.NS", "CPSE", "26041", "NIFTY_CPSE.NS",
+               shoonya_history_fallback="yahoo", comparison_group="sectors"),
 )}
 QUOTE_MAX_AGE = timedelta(seconds=90)
 HISTORY_DAYS = 60
@@ -80,7 +113,7 @@ class InstrumentState:
         self.source_id = "yahoo"
         self._source_opens = {self.source_id: {}}
         self.sessions, self.sessions_5m = {}, {}
-        self.reset(in_ist(now()).date().isoformat())
+        self.reset(in_ist(now()).date().isoformat(), save=False)
         self._load_sessions()
         self._source_history_ready = not self.sessions_5m
         self._source_sessions = {self.source_id: (self.sessions, self.sessions_5m, self.cache_dir,
@@ -188,8 +221,6 @@ class InstrumentState:
                                if path.stem >= cutoff}
 
     def _save_session(self):
-        if not hasattr(self, "candles"):
-            return
         if self.candles:
             self.sessions[self.date] = list(self.candles)
             self._save_candles(self.date, self.candles)
@@ -319,17 +350,11 @@ class InstrumentState:
             candle.is_complete = candle.close_is_valid = False
 
     def _close_elapsed(self, timestamp):
-        intervals = [interval for interval, candle in (
-            (5, self.active_candle_5m), (15, self.active_candle))
-            if candle and timestamp >= candle.end_time]
-        return self._close_bars(intervals)
-
-    def _close_bars(self, intervals):
         closed = []
-        for interval in intervals:
+        for interval in (5, 15):
             active_key = "active_candle_5m" if interval == 5 else "active_candle"
             candle = getattr(self, active_key)
-            if candle is None:
+            if candle is None or timestamp < candle.end_time:
                 continue
             setattr(self, active_key, None)
             self._validate_close(candle)
@@ -457,7 +482,8 @@ class InstrumentState:
             fresh = tick_time and timedelta(0) <= now - tick_time <= QUOTE_MAX_AGE
             status = ("delayed" if self.quote_delay else "live") if (
                 fresh and feed_status not in ("connecting", "disconnected", "error")) else "stale"
-        snapshot = {"symbol": self.instrument.symbol, "label": self.instrument.label, "date": session_date or self.date,
+        snapshot = {"symbol": self.instrument.symbol, "label": self.instrument.label,
+                "comparison_group": self.instrument.comparison_group, "date": session_date or self.date,
                 "active_candle": active.to_dict() if active else None,
                 "active_candle_5m": active_five.to_dict() if active_five else None,
                 "current_price": price, "last_tick_time": tick_time.isoformat() if tick_time else None,

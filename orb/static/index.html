@@ -28,7 +28,10 @@
     <div class="chart-toolbar">
         <span id="replay-progress" role="status" hidden></span>
         <span id="range">ORB 09:15–09:45 IST</span>
-        <button id="comparison-toggle" aria-pressed="true" title="Show or hide derivatives. Their breakouts use 5m closes outside the first 45m closing range.">Derivatives</button>
+        <div id="comparison-tabs" class="comparison-tabs" role="tablist" aria-label="Comparison indices">
+          <button id="comparison-toggle" role="tab" aria-selected="true" aria-pressed="true" aria-controls="chart-wrap" title="Derivatives · 5m closes outside each index’s first 45m closing range.">Derivatives</button>
+          <button id="sectors-tab" role="tab" aria-selected="false" aria-pressed="false" aria-controls="chart-wrap" tabindex="-1" title="NIFTY Sectors · 5m closes outside each index’s first 45m closing range.">NIFTY Sectors</button>
+        </div>
         <div class="interval-control" role="group" aria-label="Candle interval"><button id="interval-15m" aria-pressed="true">15m</button><button id="interval-5m" aria-pressed="false">5m</button></div>
         <button id="replay" class="icon-button" aria-label="Replay this session" aria-pressed="false" title="Candle-based replay: illustrative OHLC progression, including confirmed signals. Live quotes keep collecting." disabled><svg class="play-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6Z"/></svg><svg class="stop-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="1"/></svg></button>
     </div>

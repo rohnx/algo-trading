@@ -13,6 +13,7 @@ class ChartMotion {
     this.enabled = true;
     this.active = false;
     this.domain = null;
+    this.scaleScope = null;
     this.tracks.clear();
     this.seen.clear();
   }
@@ -73,7 +74,13 @@ class ChartMotion {
     return this.active;
   }
 
-  fit(min, max, minimumSpan = 20) {
+  fit(min, max, minimumSpan = 20, scope = '') {
+    if (scope !== this.scaleScope) {
+      this.domain = null;
+      this.tracks.delete('__domain:min');
+      this.tracks.delete('__domain:max');
+      this.scaleScope = scope;
+    }
     const span = Math.max(max - min, minimumSpan);
     const center = (min + max) / 2;
     const fitted = { min: center - span * .62, max: center + span * .62 };

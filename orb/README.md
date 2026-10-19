@@ -24,8 +24,11 @@ loads, backfills, bar closes, and recovery. Unchanged saved bars are not rewritt
 Shoonya uses the same OAuth SDK and environment variables as `shoonya/live_feed.py`:
 `SHOONYA_CLIENT_ID`, `SHOONYA_USER_ID`, `SHOONYA_SECRET_CODE`, and a fresh
 `SHOONYA_AUTH_CODE`. The adapter reads the workspace `.env` and `shoonya/.env`
-without overwriting exported variables. Both providers subscribe to all six
-indices through one socket:
+without overwriting exported variables. Both providers subscribe to all 21
+indices through one socket. Comparison tabs choose what is displayed while
+prices continue collecting for both groups.
+
+The primary chart and **Derivatives** group use:
 
 | Index | Yahoo symbol | Shoonya subscription (exchange/token) |
 | --- | --- | --- |
@@ -35,6 +38,43 @@ indices through one socket:
 | Nifty Next 50 | `^NSMIDCP` | `NSE\|26013` |
 | Fin Nifty | `NIFTY_FIN_SERVICE.NS` | `NSE\|26037` |
 | BSE Focused IT (FOCIT) | `FOCIT.BO` (15-minute delay) | `BSE\|75` |
+
+The **NIFTY Sectors** group uses these 15 indices, with short chart labels:
+
+| Label | Yahoo symbol | Shoonya subscription |
+| --- | --- | --- |
+| Pharma | `^CNXPHARMA` | `NSE\|26023` |
+| Auto | `^CNXAUTO` | `NSE\|26029` |
+| FMCG | `^CNXFMCG` | `NSE\|26021` |
+| Metal | `^CNXMETAL` | `NSE\|26030` |
+| PSU Bank | `^CNXPSUBANK` | `NSE\|26025` |
+| Realty | `^CNXREALTY` | `NSE\|26018` |
+| Consumer Durables | `NIFTY_CONSR_DURBL.NS` | `NSE\|26070` |
+| Oil & Gas | `NIFTY_OIL_AND_GAS.NS` | `NSE\|26071` |
+| Private Bank | `NIFTY_PVT_BANK.NS` | `NSE\|26047` |
+| Energy | `^CNXENERGY` | `NSE\|26020` |
+| India Defence | `NIFTY_IND_DEFENCE.NS` | `NSE\|26092` |
+| Infrastructure | `^CNXINFRA` | `NSE\|26019` |
+| PSE | `^CNXPSE` | `NSE\|26024` |
+| Commodities | `^CNXCMDT` | `NSE\|26035` |
+| CPSE | `NIFTY_CPSE.NS` | `NSE\|26041` |
+
+After-hours checks on 16 October 2026 verified quotes for all 15 sector tokens
+and Yahoo five-minute history for each. Shoonya returned no intraday history
+for these sectors; the monitor uses labelled Yahoo backfill while collecting
+native Shoonya bars. Native history fetched from Shoonya remains available for
+the existing five NSE chart/Derivatives instruments. The sector checks verified
+REST quote availability, not live WebSocket arrival timing; live sector latency
+still requires a market-hours check. See the
+[provider audit](research/sector-audit-2026-10-16.md) for the recorded results.
+An isolated check on 17 October authenticated successfully, subscribed all 21
+instruments over one Shoonya socket, and received price-bearing subscription
+snapshots for all 15 sectors. This confirms connection and routing, without
+measuring changing live ticks during an open market. The sanitized
+[connection check](research/sector-connection-check-2026-10-17.json) records it.
+
+After updating this code, restart `uv run orb/orb_monitor.py` and refresh the
+browser tab so both the expanded registry and new tab controls load.
 
 Midcap Select is distinct from Midcap 50. Yahoo's `^CNXFIN` is the Financial
 Services 25/50 index, so it is not used for Fin Nifty. Tokens are listed in the
@@ -55,13 +95,24 @@ Shoonya history, and missing intervals remain gaps. The touchline's reported ses
 open supplies the percentage baseline; it does not fabricate opening candles.
 Reported openings are saved by provider and session, so collected bars keep
 their percentage baseline after a restart. Native opening candles take priority.
-Until a complete bar is collected, the chart shows the current quote as a dot.
+If a 15-minute bar is incomplete, its valid 5-minute samples remain visible.
+If neither interval has a usable forming bar, the chart shows the current quote
+as a separate dot; it never joins that quote across unobserved trading.
+While Shoonya is selected, small same-day Yahoo history requests run every five
+minutes for indices that need backfill, including FOCIT and the 15 sectors.
+They fill gaps before the live connection as completed candles become available,
+without pausing the Shoonya socket or replacing its valid bars. History and
+backfill requests have bounded concurrency so expanding the registry does not
+start one active HTTP request per index at once.
 Yahoo supplies FOCIT history and streaming quotes with a 15-minute delay.
 Its line-end label marks the delay with **D** and shows the upstream quote time
 and delay length in its title;
 its bars close against that delayed clock. If updates stop, it becomes stale.
-Both providers keep separate saved data; the FOCIT backfill is composed only for
-display and cannot affect NIFTY's ORB signals or Telegram alerts.
+Both providers keep separate saved data; backfill is composed for comparison
+display and each comparison's close-only breakout, and cannot affect NIFTY's
+ORB signals or Telegram alerts. **H** identifies Yahoo history contribution;
+**D** identifies a delayed current quote. The Shoonya dropdown choice does not
+mean every historical candle came from Shoonya.
 
 An authenticated session is reused for same-day source switches; expired sessions,
 changed credentials, and a new IST day require a fresh login. Editing the `.env`
@@ -98,17 +149,26 @@ same full-day width. Each interval displays its own opening range and arrows:
 | 15m | First 30 minutes, 09:15–09:45 IST | A 15-minute close outside that range |
 | 5m | First 45 minutes, 09:15–10:00 IST | A 5-minute close outside that range |
 
-The **Derivatives** button shows or hides the five comparison lines together:
-BANKNIFTY (amber), Midcap Select (teal), Next 50 (plum), Fin Nifty (rose), and
-FOCIT (green).
-Each compares movement since its **09:15 session open**. Its vertical position
-is `NIFTY 50 open × index price / index open`, so equal percentage moves occupy
-the same height. The right axis remains equivalent NIFTY 50 prices.
+The **Derivatives** and **NIFTY Sectors** tabs select at most one comparison
+group. Derivatives contains BANKNIFTY (amber), Midcap Select (teal), Next 50
+(plum), Fin Nifty (rose), and FOCIT (green). NIFTY Sectors contains the 15
+sector indices listed above. Selecting a tab removes the other group's lines
+and labels; clicking the active tab again hides comparisons, leaving NIFTY alone.
+Tab changes preserve
+the date, provider, 5m/15m interval and replay position, and do not reconnect
+the feed or reset opening ranges. Only the selected group's visible lines
+participate in scale fitting and hover interactions.
+Comparison paths and labels both measure returns from each index's **09:15
+session open**. Their shared starting point is NIFTY's session open at the left
+margin: a +1% index plots at 1.01 times NIFTY's open. The reference stays the
+same in both intervals, live views, history and replay. The opening anchor is
+display-only; it creates no candle or breakout confirmation, and missing opening
+history stays disconnected. The right axis remains equivalent NIFTY prices.
 
 The chart fits NIFTY's candles and every valid point of the visible comparison
 lines, with padding above and below. Large divergences remain fully visible;
 hiding the group refits the scale to NIFTY alone. Switching between 15m and 5m
-keeps the scale steady unless the finer data needs more room. Comparison names
+changes the sampled closes while preserving their opening-price baseline. Comparison names
 and percentage changes sit beside their line ends, with collision spacing,
 subtle connectors and an opaque text background that masks underlying strokes.
 NIFTY's name and return sit in the right price-axis margin beside its price.
@@ -124,21 +184,42 @@ with the first possible confirmation at 10:05. Equality or a close back inside
 the band clears qualification. Incomplete opening data leaves the range unlocked,
 and an invalid latest closed bar cannot confirm a breakout. The same rule applies
 in both chart intervals, separately from NIFTY's existing dual-ORB strategy.
+During live trading and replay, emphasis expires when the next five-minute close
+is missing. Fresh quotes alone cannot revive the older confirmation; delayed
+feeds use their own source clock. Label titles include the closing range and
+last confirmation price for verification.
 
-Qualifying comparison lines and directional labels remain visible; other
+Before NIFTY's first dual-ORB signal of the session, nonqualifying comparisons
+remain visible, softly blurred, without hovering. Qualifying comparison lines
+and directional labels stay crisp. After NIFTY confirms, nonqualifying
 comparisons are hidden in the idle view. Hover NIFTY's candles, header, price
 marker or margin label to reveal the nonqualifying comparisons softly blurred.
 Focusing the NIFTY margin label offers the same reveal from the keyboard.
 Hover a qualifying line or hover/focus its label to isolate it further.
-Leaving returns to the idle view. Before any index qualifies, hovering NIFTY
-still reveals the comparisons so their progress can be inspected.
+Leaving returns to the idle view. A return inside NIFTY's range does not restore
+the default overview after that session's first signal. Replay uses the same
+transition when it reaches the signal.
+The price scale fits all comparisons during the initial overview, then NIFTY
+and qualifying indices in the idle view after confirmation. Revealing
+comparisons temporarily fits all their lines; leaving restores the idle scale,
+so an invisible index cannot compress NIFTY's candles.
 Stale or unavailable quotes do not qualify for emphasis. Delayed quotes remain
 identified, and replay evaluates only the 5-minute closes already reached.
 
 The lines use the selected interval's native closes: 15-minute bars in 15m,
 5-minute bars in 5m, plus the forming bar when a valid live quote is available.
-Each point aligns with its candle's center. Missing or invalid
-bars break the line.
+An incomplete 15-minute comparison bar uses its available 5-minute children,
+so a partial parent cannot hide valid recent closes or its usable live child.
+An explicitly valid observed close can still be plotted when its candle's OHLC
+is incomplete after a late connection. This does not promote that partial candle
+into a complete strategy-confirmation candle.
+Completed comparison closes appear at their closing times (first at 09:30 in
+15m, 09:20 in 5m); forming samples use their actual quote times. Endpoint labels
+use the price and time of the plotted sample, including during animation. Missing or invalid
+bars break the line. A compact **Data gap** notice in the footer identifies
+missing or incomplete closed NIFTY intervals. It follows the selected session
+and replay clock, without labelling the unfilled future part of today as missing.
+Unavailable provider prices are never interpolated into candles or signals.
 A missing opening baseline makes comparison unavailable, rather than treating
 the first late quote as the open. Each index has its own freshness: after 90
 seconds without a quote, its reading says **stale** and its current percentage

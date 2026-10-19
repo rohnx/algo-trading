@@ -26,6 +26,9 @@ const comparisonTips = new Map();
 const seriesLabels = new Map();
 let hoveredComparison = null;
 let focusedComparison = null;
+let chartHover = { primary: false, comparison: null };
+let chartHitTest = null;
+let chartHoverAnchor = null;
 const sourceName = source => source === 'shoonya' ? 'Shoonya' : 'Yahoo Finance';
 let today = sessionDate();
 let selectedDate = today;
@@ -52,9 +55,15 @@ let transition = null;
 let replay = null;
 let renderFrame = 0;
 let palette;
-let comparisonVisible = true;
+let selectedComparisonGroup = 'derivatives';
+let lastComparisonGroup = selectedComparisonGroup;
 let lastClockState = '';
-const comparisonPalette = ['comparison-line', 'comparison-line-2', 'comparison-line-3', 'comparison-line-4', 'comparison-line-5'];
+const comparisonPalette = ['comparison-line', ...Array.from({ length: 14 }, (_, index) => `comparison-line-${index + 2}`)];
+const sectorSymbols = new Set(['^CNXPHARMA', '^CNXAUTO', '^CNXFMCG', '^CNXMETAL', '^CNXPSUBANK',
+  '^CNXREALTY', 'NIFTY_CONSR_DURBL.NS', 'NIFTY_OIL_AND_GAS.NS', 'NIFTY_PVT_BANK.NS', '^CNXENERGY',
+  'NIFTY_IND_DEFENCE.NS', '^CNXINFRA', '^CNXPSE', '^CNXCMDT', 'NIFTY_CPSE.NS']);
+const comparisonGroups = { derivatives: { id: 'comparison-toggle', label: 'Derivatives' },
+  sectors: { id: 'sectors-tab', label: 'NIFTY Sectors' } };
 
 function readPalette() {
   const style = getComputedStyle(document.documentElement);
@@ -277,7 +286,8 @@ function primaryInstrument(data) {
 }
 
 function comparisonInstruments(data) {
-  return Object.values(data?.instruments || {}).filter(item => item.symbol !== (data.primary_symbol || '^NSEI'));
+  return Object.values(data?.instruments || {}).filter(item => item.symbol !== (data.primary_symbol || '^NSEI')
+    && (item.comparison_group || (sectorSymbols.has(item.symbol) ? 'sectors' : 'derivatives')) === selectedComparisonGroup);
 }
 
 const comparisonColor = index => palette[comparisonPalette[index % comparisonPalette.length]];
@@ -303,21 +313,43 @@ function comparisonQuoteFresh(instrument) {
   return connected && Number.isFinite(timestamp) && age >= 0 && age <= 90000;
 }
 
-// Sample the selected bars and put each close at its candle's center. The
-// actual quote time still controls replay eligibility and history coverage.
+function comparisonCloseValid(candle) {
+  // A late start can leave OHLC incomplete while its observed close is valid.
+  // Old partial bars without an explicit close-valid flag remain excluded.
+  return candle.close_is_valid !== false && (candle.is_complete !== false || candle.close_is_valid === true)
+    && Number.isFinite(candle.close) && candle.close > 0;
+}
+
+function comparisonCandles(instrument) {
+  const selected = getCandles(instrument, selectedInterval);
+  if (selectedInterval !== 15) return selected;
+  const five = getCandles(instrument, 5);
+  // A partial 15m parent must not hide valid, observed 5m closes inside it.
+  // Keep the normal 15m sampling wherever the parent is usable; finer samples
+  // still carry their own validity and coverage, so real gaps stay disconnected.
+  return selected.flatMap(parent => {
+    if (parent.is_complete !== false && parent.close_is_valid !== false) return [parent];
+    const { start, end } = candleClock(parent);
+    const children = five.filter(child => candleClock(child).start >= start && candleClock(child).end <= end);
+    return children.length ? children : [parent];
+  });
+}
+
+// A close belongs at its completion time; forming samples use the quote clock.
 function comparisonPoints(instrument, cutoff = Infinity) {
   if (!(instrument?.session_open > 0)) return [];
   const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
-  const points = cutoff >= opening ? [{ time: opening, price: instrument.session_open, gap: true }] : [];
+  // Session open remains the return baseline, but is not a five-minute close.
+  const points = [];
   const actualQuoteTime = Date.parse(instrument.last_tick_time);
-  let previous = opening, gap = false, hasCurrentBar = false;
-  for (const candle of getCandles(instrument, selectedInterval)) {
+  let previous = opening, gap = true, hasCurrentBar = false;
+  for (const candle of comparisonCandles(instrument)) {
     const { start, end } = candleClock(candle);
     // Backfill has a coverage boundary without claiming a fresh live quote.
     const quoteTime = candle.is_closed ? end : Date.parse(instrument.last_tick_time ?? instrument.history_coverage_time);
     if (!Number.isFinite(quoteTime) || quoteTime > cutoff || !candle.is_closed && !(start <= quoteTime && quoteTime < end)) continue;
-    if (candle.close_is_valid === false || candle.is_complete === false) { gap = true; continue; }
-    points.push({ time: (start + end) / 2, quoteTime, barStart: start, barEnd: end, price: candle.close, gap: gap || start > previous });
+    if (!comparisonCloseValid(candle)) { gap = true; continue; }
+    points.push({ time: quoteTime, quoteTime, barStart: start, barEnd: end, price: candle.close, gap: gap || start > previous });
     if (!candle.is_closed && quoteTime === actualQuoteTime) hasCurrentBar = true;
     previous = end; gap = false;
   }
@@ -326,7 +358,7 @@ function comparisonPoints(instrument, cutoff = Infinity) {
   const quoteTime = actualQuoteTime;
   const separateNativeQuote = instrument.history_fallback && instrument.quote_source_id === 'shoonya'
     && !hasCurrentBar && quoteTime >= (points.at(-1)?.quoteTime ?? opening);
-  if ((points.length === 1 || separateNativeQuote) && !replay && cutoff === Infinity
+  if ((!points.length || separateNativeQuote) && !replay && cutoff === Infinity
       && ['live', 'delayed'].includes(instrument.comparison_status) && comparisonQuoteFresh(instrument)
       && quoteTime >= opening && quoteTime < opening + 375 * 60000 && Number.isFinite(instrument.current_price)) {
     points.push({ time: quoteTime, quoteTime, price: instrument.current_price, gap: true, quoteOnly: true });
@@ -344,9 +376,33 @@ function comparisonStatus(instrument, data) {
   return status;
 }
 
-function renderComparison(data) {
-  $('comparison-toggle').setAttribute('aria-pressed', String(comparisonVisible));
-  $('comparison-toggle').setAttribute('aria-label', `${comparisonVisible ? 'Hide' : 'Show'} derivatives comparison lines`);
+function renderComparison() {
+  for (const [group, { id, label }] of Object.entries(comparisonGroups)) {
+    const selected = selectedComparisonGroup === group, button = $(id);
+    button.setAttribute('aria-selected', String(selected));
+    button.setAttribute('aria-pressed', String(selected));
+    button.setAttribute('aria-label', label);
+    button.title = `${selected ? 'Hide' : 'Show'} ${label} · Select one comparison group, or click the selected group again for NIFTY only. Breakouts use 5m closes outside each index’s first 45m closing range.`;
+    button.tabIndex = group === (selectedComparisonGroup || lastComparisonGroup) ? 0 : -1;
+  }
+  $('series-labels').dataset.group = selectedComparisonGroup || '';
+}
+
+function setComparisonGroup(group, toggle = false) {
+  if (!(group in comparisonGroups)) return;
+  const next = toggle && group === selectedComparisonGroup ? null : group;
+  if (next === selectedComparisonGroup) return;
+  lastComparisonGroup = group;
+  selectedComparisonGroup = next;
+  // Group selection changes only this view. Both groups keep receiving data,
+  // while old labels, hover geometry and fitted extrema belong to the old view.
+  pointer = null;
+  comparisonTips.clear();
+  clearSeriesLabels();
+  chartMotion.reset();
+  tipContext = null;
+  renderComparison();
+  scheduleRender();
 }
 
 // Replay only sees completed bars reached by its clock. The final snapshot's
@@ -374,17 +430,35 @@ function replayBreakout(instrument, cutoff) {
 }
 
 function qualifyingDirection(instrument, data) {
-  return ['live', 'delayed', 'closed'].includes(comparisonStatus(instrument, data)) && instrument.breakout?.range_locked
-    && ['BULLISH', 'BEARISH'].includes(instrument.breakout.direction) ? instrument.breakout.direction : null;
+  const status = comparisonStatus(instrument, data), breakout = instrument.breakout;
+  if (!['live', 'delayed', 'closed'].includes(status) || !breakout?.range_locked
+      || !['BULLISH', 'BEARISH'].includes(breakout.direction)) return null;
+  if (data?.replay_time != null || status !== 'closed') {
+    const clock = data?.replay_time ?? Date.now() - comparisonQuoteDelay(instrument) * 1000;
+    const age = clock - Date.parse(breakout.confirmed_at);
+    // A fresh quote cannot revive an older confirmation across a missing close.
+    if (!(age >= 0 && age < 5 * 60000)) return null;
+  }
+  return breakout.direction;
 }
 
 function comparisonSeries(data) {
   const primary = primaryInstrument(data);
-  if (!comparisonVisible || !(primary?.session_open > 0)) return [];
-  return comparisonInstruments(data).map((instrument, index) => ({ instrument, index,
-    points: comparisonPoints(instrument, data?.replay_time ?? Infinity).map(point => ({
-      ...point, normalized: primary.session_open * point.price / instrument.session_open
-    })) }));
+  if (!(primary?.session_open > 0)) return [];
+  const origin = primary.session_open;
+  const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
+  return comparisonInstruments(data).map((instrument, index) => {
+    const points = comparisonPoints(instrument, data?.replay_time ?? Infinity);
+    const reference = instrument.session_open;
+    if (points.length) {
+      // This display anchor is the reported session open, never a strategy bar.
+      // A missing opening interval still breaks the line before its first quote.
+      if (points[0].barStart === opening) points[0].gap = false;
+      points.unshift({ time: opening, quoteTime: opening, price: reference, gap: true, sessionOpen: true });
+    }
+    return { instrument, index, origin, reference, referenceTime: opening,
+      points: points.map(point => ({ ...point, normalized: origin * point.price / reference })) };
+  });
 }
 
 function distanceToSegment(point, start, end) {
@@ -396,7 +470,7 @@ function distanceToSegment(point, start, end) {
 function comparisonEmphasis(symbol, direction, emphasis) {
   if (emphasis.active) return emphasis.active === symbol ? 'focused' : 'muted';
   if (direction) return 'qualifying';
-  return emphasis.reveal ? 'revealed' : 'hidden';
+  return emphasis.overview || emphasis.reveal ? 'revealed' : 'hidden';
 }
 
 function primaryLabelGeometry(priceY, { right, top, bottom, width }) {
@@ -405,28 +479,26 @@ function primaryLabelGeometry(priceY, { right, top, bottom, width }) {
     width: Math.max(30, width - right - 9), height: 28, priceY };
 }
 
-function drawComparisons(data, series, { left, right, top, bottom, xMinute, y, primaryHovered }) {
+function comparisonEmphasisState(data, series) {
+  const qualifying = new Set(series.filter(item => qualifyingDirection(item.instrument, data)).map(item => item.instrument.symbol));
+  const active = [focusedComparison, hoveredComparison, chartHover.comparison].find(symbol => qualifying.has(symbol)) || null;
+  const primarySymbol = data?.primary_symbol || '^NSEI';
+  // The first NIFTY dual-ORB signal ends the default overview for this session.
+  // Replay frames already contain only signals reached by their clock.
+  const overview = !(data?.signals?.length);
+  const reveal = !active && (chartHover.primary || [focusedComparison, hoveredComparison].includes(primarySymbol));
+  return { active, reveal, qualifying, overview };
+}
+
+function drawComparisons(data, series, { left, right, top, bottom, xMinute, y }, emphasis) {
   const opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
   const position = point => [xMinute(555 + (point.time - opening) / 60000), y(point.normalized)];
-  const qualifying = new Set(series.filter(item => qualifyingDirection(item.instrument, data)).map(item => item.instrument.symbol));
-  let nearest = null, distance = 7;
-  if (pointer && pointer.x >= left && pointer.x <= right && pointer.y >= top && pointer.y <= bottom) {
-    for (const { instrument, points } of series) {
-      if (!qualifying.has(instrument.symbol)) continue;
-      points.forEach((point, index) => {
-        const current = position(point), previous = index && !point.gap ? position(points[index - 1]) : current;
-        const candidate = distanceToSegment(pointer, previous, current);
-        if (candidate < distance) { nearest = instrument.symbol; distance = candidate; }
-      });
-    }
-  }
-  const active = [focusedComparison, hoveredComparison, nearest].find(symbol => qualifying.has(symbol)) || null;
-  const primarySymbol = data?.primary_symbol || '^NSEI';
-  const reveal = !active && (primaryHovered || [focusedComparison, hoveredComparison].includes(primarySymbol));
-  const emphasis = { active, reveal, qualifying, position };
+  const { active, reveal, qualifying, overview } = emphasis;
+  emphasis = { ...emphasis, position };
   $('series-labels').dataset.focused = active || '';
   $('series-labels').dataset.qualifying = String(qualifying.size);
   $('series-labels').dataset.reveal = String(Boolean(reveal));
+  $('series-labels').dataset.overview = String(overview);
   for (const { instrument, index, points } of series) {
     if (!points.length) continue;
     const qualifies = qualifying.has(instrument.symbol);
@@ -453,7 +525,11 @@ function clearSeriesLabels() {
   $('series-labels').dataset.focused = '';
   $('series-labels').dataset.qualifying = '0';
   $('series-labels').dataset.reveal = 'false';
+  $('series-labels').dataset.overview = 'false';
   hoveredComparison = focusedComparison = null;
+  chartHover = { primary: false, comparison: null };
+  chartHitTest = null;
+  chartHoverAnchor = null;
 }
 
 function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
@@ -466,8 +542,11 @@ function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
   if (primary?.session_open > 0 && Number.isFinite(shownPrice)) {
     const last = getCandles(data).at(-1), opening = Date.parse(`${selectedDate}T09:15:00+05:30`);
     const time = last ? (candleClock(last).start + candleClock(last).end) / 2 : Date.parse(primary.last_tick_time);
+    const sample = getCandles(primary, 5).at(-1) || last;
+    const quoteTime = data?.replay_time ?? Date.parse(primary.last_tick_time ?? primary.history_coverage_time ?? sample?.end_time);
     if (Number.isFinite(time)) entries.push({ instrument: { ...primary, symbol: primarySymbol, label: 'NIFTY 50' },
-      point: { price: data.current_price }, position: [xMinute(555 + (time - opening) / 60000), y(shownPrice)], primary: true, direction: null });
+      point: { price: shownPrice, quoteTime },
+      position: [xMinute(555 + (time - opening) / 60000), y(shownPrice)], primary: true, direction: null });
   }
   const symbols = new Set(entries.map(entry => entry.instrument.symbol));
   for (const [symbol, label] of seriesLabels) if (!symbols.has(symbol)) { label.remove(); seriesLabels.delete(symbol); }
@@ -476,23 +555,23 @@ function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
   for (const entry of entries) {
     const { instrument, primary: isPrimary, direction } = entry;
     const status = comparisonStatus(instrument, data);
-    const price = ['live', 'closed', 'delayed'].includes(status) && Number.isFinite(instrument.current_price)
-      ? instrument.current_price : entry.point.price;
-    const change = (price / instrument.session_open - 1) * 100;
+    const change = (entry.point.price / instrument.session_open - 1) * 100;
     const provenance = comparisonProvenance(instrument, data);
     const delayed = status === 'delayed', history = Boolean(instrument.history_fallback);
     entry.text = isPrimary ? `${instrument.label}\n${['live', 'closed', 'delayed'].includes(status) ? percent(change) : status}` : `${direction ? direction === 'BULLISH' ? '▲ ' : '▼ ' : ''}${instrument.label} ${percent(change)}${delayed ? ' D' : ''}${history ? ' H' : ''}${status === 'stale' ? ' · stale' : status === 'unavailable' ? ' · unavailable' : ''}`;
     entry.emphasis = isPrimary ? 'primary' : comparisonEmphasis(instrument.symbol, direction, emphasis);
     entry.width = Math.ceil(ctx.measureText(entry.text).width) + 6;
     entry.status = status;
-    const timestamp = Date.parse(instrument.last_tick_time);
+    const timestamp = entry.point.quoteTime;
     const breakout = instrument.breakout;
     const confirmation = breakout?.direction && Number.isFinite(Date.parse(breakout.confirmed_at))
-      ? `${breakout.direction.toLowerCase()} confirmed ${timeLabel(breakout.confirmed_at)}`
+      ? direction ? `${breakout.direction.toLowerCase()} confirmed ${timeLabel(breakout.confirmed_at)}`
+        : `last recorded ${breakout.direction.toLowerCase()} close ${timeLabel(breakout.confirmed_at)} · ${status === 'stale' || status === 'unavailable' ? 'current confirmation unavailable' : 'no current 5m confirmation'}`
       : breakout?.range_locked ? Number.isFinite(breakout.price) ? 'latest close within range' : 'awaiting a valid 5m close'
       : 'opening range incomplete';
-    entry.title = `${instrument.label} · ${percent(change)} since 09:15 open · ${status}${Number.isFinite(timestamp) ? ` · last quote ${timeLabel(timestamp)}` : ''}${delayed ? ` · ${comparisonDelayLabel(instrument)}` : ''}${provenance.title}${!isPrimary ? ` · 5m close outside the first 45m closing range · ${confirmation}` : ''}`;
-    if (direction) entry.title += ' · Hover or focus to isolate';
+    entry.title = `${instrument.label} · ${percent(change)} since 09:15 open · ${status}${Number.isFinite(timestamp) ? ` · as of ${timeLabel(timestamp)}` : ''}${delayed ? ` · ${comparisonDelayLabel(instrument)}` : ''}${provenance.title}${!isPrimary ? ` · 5m close outside the first 45m closing range · ${confirmation}` : ''}`;
+    if (!isPrimary && breakout?.range_locked) entry.title += ` · Closing range ${number(breakout.range_low)}–${number(breakout.range_high)} · Last confirmed close ${number(breakout.price)}`;
+    if (direction) entry.title += entry.emphasis === 'muted' ? ' · Another index is isolated' : ' · Hover or focus to isolate';
     if (isPrimary) entry.title += ' · Hover or focus to reveal comparisons';
   }
   for (const entry of entries) {
@@ -512,12 +591,31 @@ function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
   const gap = Math.min(20, (bottom - top - 18) / Math.max(1, visible.length - 1));
   const ordered = [...visible].sort((a, b) => a.position[1] - b.position[1] || a.instrument.symbol.localeCompare(b.instrument.symbol));
   let previousY = top - gap + 9;
-  ordered.forEach(entry => { entry.labelY = Math.max(top + 9, entry.position[1], previousY + gap); previousY = entry.labelY; });
-  const overflow = (ordered.at(-1)?.labelY ?? bottom - 9) - (bottom - 9);
-  if (overflow > 0) {
-    ordered.at(-1).labelY -= overflow;
-    for (let index = ordered.length - 2; index >= 0; index--) ordered[index].labelY = Math.min(ordered[index].labelY, ordered[index + 1].labelY - gap);
-  }
+  ordered.forEach((entry, index) => {
+    const minimum = Math.max(top + 9, previousY + gap);
+    const maximum = bottom - 9 - (ordered.length - index - 1) * gap;
+    const target = Math.max(minimum, Math.min(maximum, entry.position[1]));
+    const blocked = [];
+    // A label placed before its endpoint must not erase its own price line.
+    // Only observed, connected strokes reserve space; real gaps stay gaps.
+    const labelLeft = entry.labelX - 4, labelRight = entry.labelX + entry.width + 4;
+    for (let pointIndex = 1; pointIndex < entry.points.length; pointIndex++) {
+      if (entry.points[pointIndex].gap) continue;
+      const [x1, y1] = emphasis.position(entry.points[pointIndex - 1]);
+      const [x2, y2] = emphasis.position(entry.points[pointIndex]);
+      if (Math.max(x1, x2) < labelLeft || Math.min(x1, x2) > labelRight) continue;
+      const start = Math.max(labelLeft, Math.min(x1, x2)), end = Math.min(labelRight, Math.max(x1, x2));
+      const at = x => y1 + (y2 - y1) * (x - x1) / (x2 - x1);
+      const ys = Math.abs(x2 - x1) < .001 ? [y1, y2] : [at(start), at(end)];
+      blocked.push([Math.min(...ys) - 13, Math.max(...ys) + 13]);
+    }
+    const candidates = [target, minimum, maximum, ...blocked.flatMap(([low, high]) => [low - 1, high + 1])]
+      .filter(candidate => candidate >= minimum && candidate <= maximum
+        && blocked.every(([low, high]) => candidate <= low || candidate >= high))
+      .sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b);
+    entry.labelY = candidates[0] ?? target;
+    previousY = entry.labelY;
+  });
   for (const entry of entries) {
     const { instrument, primary: isPrimary, direction, index, position: [tipX, tipY] } = entry;
     let label = seriesLabels.get(instrument.symbol);
@@ -541,7 +639,7 @@ function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
     label.dataset.emphasis = state;
     label.dataset.primary = String(isPrimary);
     label.hidden = state === 'hidden';
-    if (instrument.last_tick_time) label.dataset.asof = instrument.last_tick_time;
+    if (Number.isFinite(entry.point.quoteTime)) label.dataset.asof = new Date(entry.point.quoteTime).toISOString();
     else delete label.dataset.asof;
     label.tabIndex = isPrimary || direction ? 0 : -1;
     const color = isPrimary ? palette['price-ink'] : comparisonColor(index);
@@ -697,6 +795,28 @@ function stopReplay() {
 
 function displayView() { return replay ? replay.frame : view; }
 
+function primaryDataGaps(data) {
+  const five = getCandles(data, 5).filter(candle => candle.is_closed);
+  const interval = five.length ? 5 : 15;
+  const bars = five.length ? five : getCandles(data, 15).filter(candle => candle.is_closed);
+  if (!bars.length) return { ranges: [], count: 0, interval };
+  const byStart = new Map(bars.map(candle => [candleClock(candle).start, candle]));
+  const start = candleClock(bars[0]).start, end = candleClock(bars.at(-1)).end;
+  const ranges = [];
+  let count = 0;
+  // Only describe closed coverage already reached; never flag the unfilled
+  // future part of a live session or a replay as missing data.
+  for (let time = start; time < end && time < start + 375 * 60000; time += interval * 60000) {
+    const candle = byStart.get(time);
+    if (candle && candle.is_complete !== false && candle.close_is_valid !== false) continue;
+    count++;
+    const previous = ranges.at(-1);
+    if (previous?.end === time) previous.end += interval * 60000;
+    else ranges.push({ start: time, end: time + interval * 60000 });
+  }
+  return { ranges, count, interval };
+}
+
 function statusText(data = displayView()) {
   if (switchingSource) return 'Switching source…';
   if (loading) return 'Loading…';
@@ -716,7 +836,7 @@ function scheduleRender() {
 
 function clockState(data = displayView()) {
   return [statusText(data), comparisonStatus(primaryInstrument(data), data),
-    ...comparisonInstruments(data).map(item => comparisonStatus(item, data))].join('|');
+    ...comparisonInstruments(data).map(item => `${comparisonStatus(item, data)}:${qualifyingDirection(item, data)}`)].join('|');
 }
 
 function render(now = performance.now()) {
@@ -746,12 +866,16 @@ function render(now = performance.now()) {
     : data && getCandles(data).length && ![15, 5].every(interval => setupFor(data, interval).range_locked) ? 'Opening ranges incomplete' : 'Waiting for both ORBs';
   if ($('signal-summary').textContent !== summary) $('signal-summary').textContent = summary;
   const feedData = live || view;
+  const gaps = primaryDataGaps(data);
+  const gapText = gaps.count ? `Data gap ${gaps.ranges.slice(0, 2).map(range => `${timeLabel(range.start)}–${timeLabel(range.end)}`).join(', ')}${gaps.ranges.length > 2 ? ` · +${gaps.ranges.length - 2} more` : ''}` : '';
   const feedState = switchingSource ? 'Switching source…' : sourceError || feedData?.feed_error
-    || (!connected ? 'Reconnecting…' : ({ connecting: 'Connecting…', disconnected: 'Feed disconnected', error: 'Feed error' }[feedData?.feed_status]) || '');
+    || (!connected ? 'Reconnecting…' : ({ connecting: 'Connecting…', disconnected: 'Feed disconnected', error: 'Feed error' }[feedData?.feed_status]) || gapText);
   $('feed-status').hidden = !feedState;
   $('feed-status').textContent = feedState ? `${sourceName(selectedSource)} · ${feedState}` : '';
-  $('feed-status').dataset.error = String(Boolean(sourceError || feedData?.feed_error));
-  $('feed-status').title = [sourceError || feedData?.feed_error, historyNote].filter(Boolean).join('\n');
+  $('feed-status').dataset.error = String(Boolean(sourceError || feedData?.feed_error || gaps.count));
+  $('feed-status').title = [sourceError || feedData?.feed_error,
+    gaps.count ? `${gaps.count} missing or incomplete ${gaps.interval}m NIFTY candles. Unavailable intervals remain gaps in the chart.` : '',
+    historyNote].filter(Boolean).join('\n');
   updateShoonyaHelp(feedData);
   $('replay').disabled = !replay && (loading || switchingSource || !getCandles(view).length);
   $('replay').setAttribute('aria-pressed', String(Boolean(replay)));
@@ -772,7 +896,7 @@ function drawChart(now = performance.now(), data = displayView()) {
   ctx.clearRect(0, 0, width, height);
   if (width < 100 || height < 80) { clearSeriesLabels(); return; }
   const baseline = [primaryInstrument(data)?.session_open, ...comparisonInstruments(data).map(item => `${item.symbol}:${item.session_open}`)];
-  const motionContext = JSON.stringify([selectedDate, data?.date, selectedSource, sourceEpoch, sourceGeneration, Boolean(replay), comparisonVisible, baseline]);
+  const motionContext = JSON.stringify([selectedDate, data?.date, selectedSource, sourceEpoch, sourceGeneration, Boolean(replay), selectedComparisonGroup, baseline]);
   if (tipContext !== motionContext) { comparisonTips.clear(); clearSeriesLabels(); tipContext = motionContext; }
   chartMotion.begin(motionContext, now,
     !reducedMotion.matches && !loading && Boolean(replay || selectedDate === today && data?.market_status !== 'closed'));
@@ -784,16 +908,17 @@ function drawChart(now = performance.now(), data = displayView()) {
   const empty = $('empty-state');
   empty.hidden = candles.length > 0;
   const missingFive = selectedInterval === 5 && !candles.length && getCandles(data, 15).length;
-  empty.textContent = loading ? switchingSource ? 'Switching quote source…' : 'Loading session…' : loadError || (data?.feed_status === 'connecting' && selectedDate === today
+  if (!candles.length) empty.textContent = loading ? switchingSource ? 'Switching quote source…' : 'Loading session…' : loadError || (data?.feed_status === 'connecting' && selectedDate === today
     ? `Connecting to ${sourceName(selectedSource)}… Loading candle history.`
-    : missingFive ? '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.' : data?.message ? `${data.message}\n${data.history_note || ''}` : `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`);
+    : missingFive ? '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.' : data?.message ? `${data.message}\n${data.history_note || ''}`
+    : selectedDate === today && timeLabel(new Date()) < '09:15' ? 'Market candles appear after 09:15 IST.' : `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`);
   ctx.font = '10px ui-monospace, monospace';
   ctx.fillStyle = palette['chart-label'];
   ctx.textAlign = 'center';
   for (let slot = 0; slot < 25; slot += width < 650 ? 4 : 2) {
     const minutes = 555 + slot * 15;
     const label = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-    ctx.fillText(label, xMinute(minutes + 7.5), height - 10);
+    ctx.fillText(label, xMinute(minutes), height - 10);
   }
   let progress = 1, outgoing = [];
   if (transition) {
@@ -826,19 +951,21 @@ function drawChart(now = performance.now(), data = displayView()) {
     [setup.orb_high, setup.orb_low].forEach(p => { if (Number.isFinite(p)) prices.push(p); });
   }
   if (Number.isFinite(shownPrice)) prices.push(shownPrice);
-  // A single percentage geometry fits every visible line, including extremes
-  // earlier in the session. Hiding the group restores the NIFTY-only range.
+  // Fit the blurred overview until NIFTY confirms, then exclude hidden neutral
+  // indices. A later NIFTY hover temporarily fits all comparisons again.
+  const shape = rangeShape(data, selectedInterval, now);
   const series = comparisonSeries(data).map(item => {
     const points = item.points.map(point => ({ ...point }));
     const last = points.at(-1), previous = points.at(-2);
-    const key = `comparison:${selectedInterval}:${item.instrument.symbol}`;
+    const key = `comparison:${selectedInterval}:${item.instrument.symbol}:${item.referenceTime}:${item.reference}`;
     const previousTip = comparisonTips.get(key);
     const active = selectedInterval === 5 ? item.instrument.active_candle_5m : item.instrument.active_candle;
     if (!last || last.gap || previousTip > last.time || active && (active.is_complete === false || active.close_is_valid === false)) {
       chartMotion.tracks.delete(`${key}:price`);
       chartMotion.tracks.delete(`${key}:time`);
     } else if (previous) {
-      last.normalized = chartMotion.value(`${key}:price`, last.normalized, replay ? previous.normalized : last.normalized);
+      last.price = chartMotion.value(`${key}:price`, last.price, replay ? previous.price : last.price);
+      last.normalized = item.origin * last.price / item.reference;
       if (replay) {
         last.time = Math.max(previous.time, chartMotion.value(`${key}:time`, last.time, previous.time));
       }
@@ -846,8 +973,11 @@ function drawChart(now = performance.now(), data = displayView()) {
     comparisonTips.set(key, item.points.at(-1)?.time);
     return { ...item, points };
   });
-  for (const { points } of series) prices.push(...points.map(point => point.normalized));
-  const { min, max } = chartMotion.fit(Math.min(...prices), Math.max(...prices), Math.max(20, (primaryInstrument(data)?.session_open || data?.current_price || 0) * .004));
+  const emphasisState = comparisonEmphasisState(data, series);
+  const fittedSeries = series.filter(item => item.points.length && (emphasisState.overview || emphasisState.reveal || emphasisState.qualifying.has(item.instrument.symbol)));
+  for (const { points } of fittedSeries) prices.push(...points.map(point => point.normalized));
+  const scaleScope = JSON.stringify(fittedSeries.map(item => [item.instrument.symbol, item.referenceTime, item.reference]).sort());
+  const { min, max } = chartMotion.fit(Math.min(...prices), Math.max(...prices), Math.max(20, (primaryInstrument(data)?.session_open || data?.current_price || 0) * .004), scaleScope);
   const y = price => bottom - (price - min) / (max - min) * (bottom - top);
   const line = (x1, y1, x2, y2, color, dash = []) => {
     ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash(dash);
@@ -861,7 +991,6 @@ function drawChart(now = performance.now(), data = displayView()) {
     ctx.fillText(number(price), right + 9, y(price) + 3);
   }
   const primary = setupFor(data), secondary = setupFor(data, selectedInterval === 15 ? 5 : 15);
-  const shape = rangeShape(data, selectedInterval, now);
   const hasRange = setup => [setup.orb_high, setup.orb_low].every(Number.isFinite);
   const nearRange = pointer && pointer.x >= left && pointer.x <= right && [primary, secondary].some(setup => hasRange(setup) && [setup.orb_high, setup.orb_low].some(price => Math.abs(pointer.y - y(price)) <= 10));
   if (hasRange(secondary) && nearRange) {
@@ -889,16 +1018,8 @@ function drawChart(now = performance.now(), data = displayView()) {
     }
   }
   const primaryLabel = primaryLabelGeometry(y(shownPrice), { right, top, bottom, width });
-  const primaryHovered = pointer && (
-    pointer.x >= right && pointer.x <= width && pointer.y >= Math.min(primaryLabel.top, primaryLabel.priceY - 10)
-      && pointer.y <= Math.max(primaryLabel.top + primaryLabel.height, primaryLabel.priceY + 10)
-    || candles.some(candle => {
-      const shape = geometry(candle, selectedInterval);
-      return Math.abs(pointer.x - shape.center) <= shape.width / 2 + 5
-        && pointer.y >= y(shape.high) - 5 && pointer.y <= y(shape.low) + 5;
-    }));
-  const comparisonGeometry = { left, right, top, bottom, xMinute, y, primaryHovered, primaryLabel };
-  const emphasis = drawComparisons(data, series, comparisonGeometry);
+  const comparisonGeometry = { left, right, top, bottom, xMinute, y, primaryLabel };
+  const emphasis = drawComparisons(data, series, comparisonGeometry, emphasisState);
   function geometry(candle, interval) {
     candle = visualCandle(candle);
     const label = timeLabel(candle.start_time);
@@ -989,9 +1110,34 @@ function drawChart(now = performance.now(), data = displayView()) {
     }
   }
   drawSeriesLabels(data, series, comparisonGeometry, emphasis, shownPrice);
+  // Resolve hover against the geometry the user actually pointed at. Retain
+  // that target until the pointer moves, so refitting cannot toggle its own
+  // reveal off and on beneath a stationary pointer.
+  chartHitTest = point => {
+    const primary = point.x >= right && point.x <= width
+      && point.y >= Math.min(primaryLabel.top, primaryLabel.priceY - 10)
+      && point.y <= Math.max(primaryLabel.top + primaryLabel.height, primaryLabel.priceY + 10)
+      || candles.some(candle => {
+        const shape = geometry(candle, selectedInterval);
+        return Math.abs(point.x - shape.center) <= shape.width / 2 + 5
+          && point.y >= y(shape.high) - 5 && point.y <= y(shape.low) + 5;
+      });
+    let comparison = null, distance = 7;
+    if (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom) {
+      for (const { instrument, points } of series) {
+        if (!emphasis.qualifying.has(instrument.symbol)) continue;
+        points.forEach((sample, index) => {
+          const current = emphasis.position(sample), previous = index && !sample.gap ? emphasis.position(points[index - 1]) : current;
+          const candidate = distanceToSegment(point, previous, current);
+          if (candidate < distance) { comparison = instrument.symbol; distance = candidate; }
+        });
+      }
+    }
+    return { primary, comparison };
+  };
   const focus = hovered || candles.at(-1);
   $('ohlc').textContent = focus ? `${timeLabel(focus.start_time)}  O ${number(focus.open)}  H ${number(focus.high)}  L ${number(focus.low)}  C ${number(focus.close)}${focus.close_is_valid === false ? '  · stale close' : focus.is_complete === false ? '  · incomplete' : focus.is_closed ? '' : '  · forming'}` : 'Move over a candle to inspect';
-  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}. ${[...seriesLabels.values()].filter(label => !label.hidden).map(label => label.getAttribute('aria-label')).join('. ')}, lines ${comparisonVisible ? 'shown' : 'hidden'}, percentage change since 09:15 open.${replay ? ' Illustrative candle replay.' : ''}`);
+  canvas.setAttribute('aria-label', `NIFTY 50, ${selectedDate}, ${candles.length} candles, ${selectedInterval}-minute interval. Last price ${number(data?.current_price)}. ${$('range').textContent}. ${$('signal-summary').textContent}. ${selectedComparisonGroup ? `${comparisonGroups[selectedComparisonGroup].label} comparisons` : 'NIFTY only'}. ${[...seriesLabels.values()].filter(label => !label.hidden).map(label => label.getAttribute('aria-label')).join('. ')}, percentage change since 09:15 open.${replay ? ' Illustrative candle replay.' : ''}`);
   chartMotion.end();
 }
 
@@ -1096,12 +1242,17 @@ $('interval-5m').addEventListener('click', () => setIntervalMinutes(5));
 $('theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme !== 'dark'));
 document.querySelector('.instrument').addEventListener('pointerenter', () => { hoveredComparison = '^NSEI'; scheduleRender(); });
 document.querySelector('.instrument').addEventListener('pointerleave', () => { if (hoveredComparison === '^NSEI') hoveredComparison = null; scheduleRender(); });
-$('comparison-toggle').addEventListener('click', () => {
-  comparisonVisible = !comparisonVisible;
-  if (!comparisonVisible) clearSeriesLabels();
-  renderComparison();
-  scheduleRender();
-});
+for (const [group, { id }] of Object.entries(comparisonGroups)) {
+  $(id).addEventListener('click', () => setComparisonGroup(group, true));
+  $(id).addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'derivatives' : event.key === 'End' ? 'sectors'
+      : group === 'derivatives' ? 'sectors' : 'derivatives';
+    setComparisonGroup(next);
+    $(comparisonGroups[next].id).focus();
+  });
+}
 $('replay').addEventListener('click', () => replay ? stopReplay() : startReplay());
 reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { chartMotion.finish(); transition = null; } scheduleRender(); });
 $('chart-wrap').addEventListener('keydown', e => {
@@ -1109,13 +1260,37 @@ $('chart-wrap').addEventListener('keydown', e => {
   if (e.key === 'Home') { e.preventDefault(); selectDate(today, true); }
   if (e.key === 'Escape' && replay) { e.preventDefault(); stopReplay(); }
 });
-canvas.addEventListener('pointermove', e => {
+$('chart-wrap').addEventListener('pointermove', e => {
   const rect = canvas.getBoundingClientRect();
-  pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top }; scheduleRender();
+  const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  if (pointer?.x !== point.x || pointer?.y !== point.y) {
+    // Keep the initiating hit area as the scale moves. Small pointer movements
+    // within that candle or line must not repeatedly refit the overview.
+    const anchored = chartHoverAnchor?.test(point);
+    if (chartHoverAnchor?.comparison && anchored?.comparison === chartHoverAnchor.comparison) {
+      chartHover = { primary: false, comparison: chartHoverAnchor.comparison };
+    } else if (chartHoverAnchor?.primary && anchored?.primary) {
+      chartHover = { primary: true, comparison: null };
+    } else {
+      chartHover = chartHitTest?.(point) || { primary: false, comparison: null };
+      chartHoverAnchor = chartHitTest && (chartHover.primary || chartHover.comparison)
+        ? { ...chartHover, test: chartHitTest } : null;
+    }
+    pointer = point;
+  }
+  scheduleRender();
 });
-canvas.addEventListener('pointerleave', () => { pointer = null; scheduleRender(); });
+$('chart-wrap').addEventListener('pointerleave', () => {
+  pointer = null;
+  chartHover = { primary: false, comparison: null };
+  chartHoverAnchor = null;
+  scheduleRender();
+});
 new ResizeObserver(() => {
   const dpr = window.devicePixelRatio || 1;
+  chartHover = { primary: false, comparison: null };
+  chartHitTest = null;
+  chartHoverAnchor = null;
   chartSize = { width: canvas.clientWidth, height: canvas.clientHeight };
   canvas.width = Math.round(chartSize.width * dpr);
   canvas.height = Math.round(chartSize.height * dpr);

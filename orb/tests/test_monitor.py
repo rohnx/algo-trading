@@ -323,23 +323,32 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(delta["last_tick_time"], quote_time.isoformat())
             self.assertEqual(full["candles_5m"], initial["instruments"][symbol]["candles_5m"])
 
-    def test_shoonya_reported_open_makes_focit_available_without_fake_history(self):
-        self.hub.activate_source("shoonya")
-        self.hub.set_feed_status("live")
-        client = queue.Queue()
-        self.hub.register_client(client)
-        client.get_nowait()
-        self.assertTrue(self.hub.process_tick(35000, tick_time=self.clock.value,
-                                             symbol="FOCIT.BO", session_open=34000))
-        event = client.get_nowait()
-        focit = event["instruments"]["FOCIT.BO"]
-        self.assertEqual(focit["session_open"], 34000)
-        self.assertEqual(focit["comparison_status"], "live")
-        self.assertAlmostEqual(focit["change_pct"], (35000 / 34000 - 1) * 100)
-        state = self.hub.snapshot()["instruments"]["FOCIT.BO"]
-        self.assertEqual(state["candles"], [])
-        self.assertEqual(state["candles_5m"], [])
-        self.assertIsNone(self.hub.snapshot()["session_open"])
+    def test_reported_open_supplies_returns_without_inventing_opening_bars(self):
+        for symbol, hour, minute, second in ((SYMBOL, 9, 15, 20), (SYMBOL, 10, 5, 0), ("FOCIT.BO", 10, 5, 0)):
+            with self.subTest(symbol=symbol, first_tick=(hour, minute, second)):
+                self.clock.value = timestamp("2026-10-19", hour, minute, second)
+                hub = MonitorHub(now=self.clock)
+                hub.activate_source("shoonya")
+                hub.set_feed_status("live")
+                client = queue.Queue()
+                hub.register_client(client)
+                client.get_nowait()
+                self.assertTrue(hub.process_tick(23100, tick_time=self.clock.value,
+                                                 symbol=symbol, session_open=23000))
+                event = client.get_nowait()
+                instrument = event["instruments"][symbol]
+                self.assertEqual(instrument["session_open"], 23000)
+                self.assertEqual(instrument["comparison_status"], "live")
+                self.assertAlmostEqual(instrument["change_pct"], (23100 / 23000 - 1) * 100)
+                state = hub.snapshot()
+                instrument = state["instruments"][symbol]
+                self.assertEqual(instrument["candles"], [])
+                self.assertEqual(instrument["candles_5m"], [])
+                self.assertEqual(instrument["active_candle"]["open"], 23100)
+                self.assertEqual(instrument["active_candle_5m"]["open"], 23100)
+                self.assertFalse(state["range_locked"])
+                self.assertEqual(state["signals"], [])
+                self.assertTrue(all(not setup["range_locked"] for setup in state["setups"].values()))
 
     def test_candle_close_supplies_full_history_after_quote_delta(self):
         self.hub.seed_historical_candles(five_bars("2026-10-05"), 5)

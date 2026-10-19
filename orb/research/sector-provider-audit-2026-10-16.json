@@ -1,0 +1,363 @@
+{
+  "date": "2026-10-16",
+  "scope": "After-hours symbol, REST quote and five-minute-history availability; no live latency verification.",
+  "yahoo_checked_at": "2026-10-16T20:00:55.444123+05:30",
+  "shoonya_checked_at": "2026-10-16T20:01:39.965886+05:30",
+  "indices": [
+    {
+      "index": "Bank",
+      "yahoo_symbol": "^NSEBANK",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26009",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 75
+    },
+    {
+      "index": "IT",
+      "yahoo_symbol": "^CNXIT",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26008",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Pharma",
+      "yahoo_symbol": "^CNXPHARMA",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26023",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Auto",
+      "yahoo_symbol": "^CNXAUTO",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26029",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "FMCG",
+      "yahoo_symbol": "^CNXFMCG",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26021",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Metal",
+      "yahoo_symbol": "^CNXMETAL",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26030",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Energy",
+      "yahoo_symbol": "^CNXENERGY",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26020",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Private Bank",
+      "yahoo_symbol": "NIFTY_PVT_BANK.NS",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26047",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "PSU Bank",
+      "yahoo_symbol": "^CNXPSUBANK",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26025",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Realty",
+      "yahoo_symbol": "^CNXREALTY",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26018",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Oil & Gas",
+      "yahoo_symbol": "NIFTY_OIL_AND_GAS.NS",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26071",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Consumer Durables",
+      "yahoo_symbol": "NIFTY_CONSR_DURBL.NS",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26070",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Commodities",
+      "yahoo_symbol": "^CNXCMDT",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26035",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "Infrastructure",
+      "yahoo_symbol": "^CNXINFRA",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26019",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "PSE",
+      "yahoo_symbol": "^CNXPSE",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26024",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "CPSE",
+      "yahoo_symbol": "NIFTY_CPSE.NS",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26041",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    },
+    {
+      "index": "India Defence",
+      "yahoo_symbol": "NIFTY_IND_DEFENCE.NS",
+      "yahoo_instrument_type": "INDEX",
+      "yahoo_today_valid_5m": 75,
+      "yahoo_previous_session_invalid_slots": [
+        "11:45",
+        "11:50"
+      ],
+      "yahoo_delay_metadata": null,
+      "shoonya_exchange": "NSE",
+      "shoonya_token": "26092",
+      "shoonya_quote_supported": true,
+      "shoonya_today_valid_5m": 0
+    }
+  ],
+  "rough_overlap_correlations": {
+    "method": "Pearson on aligned log(close/current previous-close) five-minute returns; only adjacent valid slots in same session; five sessions2026-10-12to16; FOCIT aligned by historical timestamp, no 15m arrival shift; not strategy validation",
+    "pairs": [
+      {
+        "pair": [
+          "Bank",
+          "Private Bank"
+        ],
+        "samples": 368,
+        "correlation": 0.9101
+      },
+      {
+        "pair": [
+          "Bank",
+          "PSU Bank"
+        ],
+        "samples": 368,
+        "correlation": 0.7007
+      },
+      {
+        "pair": [
+          "IT",
+          "FOCIT"
+        ],
+        "samples": 365,
+        "correlation": 0.9638
+      },
+      {
+        "pair": [
+          "Energy",
+          "Oil & Gas"
+        ],
+        "samples": 368,
+        "correlation": 0.8031
+      },
+      {
+        "pair": [
+          "Energy",
+          "Commodities"
+        ],
+        "samples": 368,
+        "correlation": 0.8819
+      },
+      {
+        "pair": [
+          "Infrastructure",
+          "Realty"
+        ],
+        "samples": 368,
+        "correlation": 0.6481
+      },
+      {
+        "pair": [
+          "PSE",
+          "CPSE"
+        ],
+        "samples": 368,
+        "correlation": 0.9152
+      }
+    ]
+  },
+  "shoonya_history_followup": {
+    "checked_at": "2026-10-16T20:03:11.477956+05:30",
+    "authentication": "ok",
+    "checks": [
+      {
+        "index": "India Defence",
+        "token": "26092",
+        "quote_supported": true,
+        "price": "9210.60",
+        "history_response": {
+          "stat": "Not_Ok",
+          "emsg": "Error Occurred : 2 \"invalid input[Token not prsent]\""
+        },
+        "valid_5m": 0
+      },
+      {
+        "index": "IT",
+        "token": "26008",
+        "quote_supported": true,
+        "price": "31924.10",
+        "history_response": {
+          "stat": "Not_Ok",
+          "emsg": "Error Occurred : 2 \"invalid input[Token not prsent]\""
+        },
+        "valid_5m": 0
+      },
+      {
+        "index": "Pharma",
+        "token": "26023",
+        "quote_supported": true,
+        "price": "25781.65",
+        "history_response": {
+          "stat": "Not_Ok",
+          "emsg": "Error Occurred : 2 \"invalid input[Token not prsent]\""
+        },
+        "valid_5m": 0
+      }
+    ]
+  }
+}

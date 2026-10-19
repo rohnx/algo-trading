@@ -43,7 +43,7 @@ def _parents(five, now):
             first["end_time"] == second["start_time"] for first, second in zip(parts, parts[1:]))
         closed = end <= now
         covered = len(parts) == 3 if closed else _time(parts[-1]["end_time"]) >= now
-        parents.append({**parts[0], "open": parts[0]["open"],
+        parents.append({**parts[0],
             "high": max(bar["high"] for bar in parts), "low": min(bar["low"] for bar in parts),
             "close": parts[-1]["close"], "volume": sum(bar["volume"] for bar in parts),
             "start_time": start.isoformat(), "end_time": end.isoformat(),
@@ -93,7 +93,9 @@ def merge_fallback_history(native, fallback, *, now, feed_status):
             parents[parent["start_time"]] = parent
     native_active = native.get("active_candle")
     if native_active and result["active_candle_5m"]:
-        parents[native_active["start_time"]] = dict(native_active)
+        composed = parents.get(native_active["start_time"])
+        if _valid(native_active) or not _valid(composed):
+            parents[native_active["start_time"]] = dict(native_active)
     parents = sorted(parents.values(), key=lambda bar: bar["start_time"])
     result["candles"] = [bar for bar in parents if bar.get("is_closed")]
     result["active_candle"] = next((bar for bar in reversed(parents) if not bar.get("is_closed")), None)

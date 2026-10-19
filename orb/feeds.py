@@ -28,6 +28,8 @@ CREDENTIAL_KEYS = ("SHOONYA_CLIENT_ID", "SHOONYA_USER_ID", "SHOONYA_SECRET_CODE"
 REST_TIMEOUT = (3, 10)
 SOCKET_OPEN_TIMEOUT = 3
 SOCKET_CLOSE_TIMEOUT = 1
+FALLBACK_REFRESH_INTERVAL = timedelta(minutes=5)
+HISTORY_CONCURRENCY = 3
 
 
 def read_shoonya_credentials():
@@ -171,9 +173,9 @@ def shoonya_history(rows, now=None, *, symbol=PRIMARY_SYMBOL):
     return sorted(candles.values(), key=lambda candle: candle.start_time)
 
 
-def fetch_yahoo_5m_history(symbol=PRIMARY_SYMBOL):
+def fetch_yahoo_5m_history(symbol=PRIMARY_SYMBOL, *, period="60d"):
     import yfinance as yf
-    history = yf.Ticker(INSTRUMENTS[symbol].yahoo_symbol).history(period="60d", interval="5m")
+    history = yf.Ticker(INSTRUMENTS[symbol].yahoo_symbol).history(period=period, interval="5m")
     now = datetime.now(IST) - timedelta(minutes=INSTRUMENTS[symbol].yahoo_delay_minutes)
     candles = []
     for timestamp, row in history.iterrows():
@@ -225,20 +227,14 @@ def _shoonya_api():
             result = self._post("gen_acs_tok", {"code": authcode, "checksum": checksum, "uid": UID})
             if "access_token" not in result:
                 return None
-            self._NorenApi__susertoken = result["susertoken"]
             self._NorenApi__access_token = result["access_token"]
             self.injectOAuthHeader(result["access_token"], result["USERID"], result["actid"])
             return result["access_token"], result["USERID"], result["refresh_token"], result["actid"]
 
-        def get_time_price_series(self, exchange, token, starttime=None, endtime=None, interval=None):
-            if starttime is None:
-                starttime = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        def get_time_price_series(self, exchange, token, starttime, endtime, interval):
             values = {"ordersource": "API", "uid": self._NorenApi__username,
-                      "exch": exchange, "token": token, "st": str(starttime)}
-            if endtime is not None:
-                values["et"] = str(endtime)
-            if interval is not None:
-                values["intrv"] = str(interval)
+                      "exch": exchange, "token": token, "st": str(starttime),
+                      "et": str(endtime), "intrv": str(interval)}
             result = self._post("TPSeries", values, self._NorenApi__OAuthHeaders)
             return result if isinstance(result, list) else None
 
@@ -295,6 +291,10 @@ class FeedManager:
         self._shoonya_session = None
         # Swapping providers must not duplicate a still-running history request.
         self._history_locks = {source: {symbol: threading.Lock() for symbol in INSTRUMENTS}
+                               for source in ("yahoo", "shoonya")}
+        # Share capacity across reconnects/source generations. A slow abandoned
+        # HTTP request still occupies its slot until it returns.
+        self._history_slots = {source: threading.BoundedSemaphore(HISTORY_CONCURRENCY)
                                for source in ("yahoo", "shoonya")}
         self._factories = {"yahoo": yahoo_factory or YahooFeed,
                            "shoonya": shoonya_factory or ShoonyaFeed}
@@ -362,6 +362,15 @@ class FeedManager:
                 self._feed = None
 
 
+class _HistoryLease:
+    def __init__(self, lock, slots):
+        self.lock, self.slots = lock, slots
+
+    def release(self):
+        self.slots.release()
+        self.lock.release()
+
+
 class _Feed:
     def __init__(self, manager, generation, *, source):
         self.manager = manager
@@ -370,6 +379,7 @@ class _Feed:
         self.socket_lock = threading.Lock()
         self.incoming = {symbol: queue.Queue(maxsize=QUEUE_SIZE) for symbol in INSTRUMENTS}
         self.history_locks = manager._history_locks[source]
+        self.history_slots = manager._history_slots[source]
 
     def apply(self, action):
         return self.manager._apply(self.generation, action)
@@ -408,10 +418,15 @@ class _Feed:
     def _acquire_history(self, connection, symbol, *, source=None):
         # A returning connection waits for old work, while stopped waiters exit promptly.
         lock = (self.manager._history_locks[source] if source else self.history_locks)[symbol]
+        slots = self.manager._history_slots[source] if source else self.history_slots
         while self._is_connected(connection):
             if lock.acquire(timeout=0.1):
-                if self._is_connected(connection):
-                    return lock
+                while self._is_connected(connection):
+                    if slots.acquire(timeout=0.1):
+                        if self._is_connected(connection):
+                            return _HistoryLease(lock, slots)
+                        slots.release()
+                        break
                 lock.release()
                 break
         return None
@@ -589,8 +604,12 @@ class ShoonyaFeed(_Feed):
         self.credentials = credentials
         self.now = now or (lambda: datetime.now(IST))
         self.fallback_history_fetcher = fallback_history_fetcher or fetch_yahoo_5m_history
+        self.fallback_recent_fetcher = fallback_history_fetcher or (
+            lambda symbol: fetch_yahoo_5m_history(symbol, period="1d"))
         self.api = None
-        self.controls = deque(maxlen=32)
+        # One reconnect may complete both native and fallback history for every
+        # instrument before the consumer wakes. Do not drop those controls.
+        self.controls = deque(maxlen=4 * len(INSTRUMENTS) + 32)
         self.callback_lock = threading.Lock()
         self.wake = threading.Event()
         self.connection = 0
@@ -601,6 +620,8 @@ class ShoonyaFeed(_Feed):
         self.cutoff = {}
         self.history_errors = {}
         self.history_fallbacks = {}
+        self.fallback_due = {}
+        self.fallback_pending = set()
 
     def start(self):
         self.status("connecting")
@@ -683,31 +704,67 @@ class ShoonyaFeed(_Feed):
             self.controls.append(("history", connection, (symbol, candles, cutoff)))
         self.wake.set()
         if not candles and INSTRUMENTS[symbol].shoonya_history_fallback == "yahoo":
-            fallback_lock = self._acquire_history(connection, symbol, source="yahoo")
-            if fallback_lock is None:
+            self._refresh_fallback(connection, symbol)
+
+    def _refresh_fallback(self, connection, symbol, *, recent=False):
+        key = (connection, symbol)
+        with self.callback_lock:
+            if (self.stopped.is_set() or not self.connected or connection != self.connection
+                    or key in self.fallback_pending):
                 return
-            fallback = None
+            self.fallback_pending.add(key)
+        fallback = None
+        try:
+            lock = self._acquire_history(connection, symbol, source="yahoo")
+            if lock is None:
+                return
             try:
-                fallback = self.fallback_history_fetcher(symbol)
-            except Exception:
-                pass
+                fetcher = self.fallback_recent_fetcher if recent else self.fallback_history_fetcher
+                fallback = fetcher(symbol)
             finally:
-                fallback_lock.release()
+                lock.release()
+        except Exception:
+            pass
+        finally:
             with self.callback_lock:
-                if self.stopped.is_set() or connection != self.connection:
-                    return
-                self.controls.append(("fallback", connection, (symbol, fallback)))
-            self.wake.set()
+                self.fallback_pending.discard(key)
+        with self.callback_lock:
+            if self.stopped.is_set() or not self.connected or connection != self.connection:
+                return
+            self.controls.append(("fallback", connection, (symbol, fallback)))
+        self.wake.set()
+
+    def _poll_fallback_history(self):
+        now = self.now().astimezone(IST)
+        # Allow the final delayed close to arrive after 15:30 too. These small
+        # same-day REST requests never reconnect or pause the Shoonya socket.
+        if now.weekday() >= 5 or not dtime(9, 15) <= now.time() < dtime(15, 50):
+            return
+        connection = self.connection
+        if not self._is_connected(connection):
+            return
+        for symbol, due in list(self.fallback_due.items()):
+            if now < due:
+                continue
+            self.fallback_due[symbol] = now + FALLBACK_REFRESH_INTERVAL
+            with self.callback_lock:
+                if (connection, symbol) in self.fallback_pending:
+                    continue
+            threading.Thread(target=self._refresh_fallback, args=(connection, symbol),
+                             kwargs={"recent": True}, daemon=True,
+                             name=f"shoonya-backfill-{symbol}").start()
 
     def _history_status(self):
         if PRIMARY_SYMBOL not in self.ready:
             return
         notes = []
         if self.history_errors:
-            missing = ", ".join(self.history_errors.values())
+            missing = (", ".join(self.history_errors.values()) if len(self.history_errors) <= 3
+                       else f"{len(self.history_errors)} indices")
             notes.append(f"Shoonya 5-minute history unavailable: {missing}")
         if self.history_fallbacks:
-            names = ", ".join(self.history_fallbacks.values())
+            names = (", ".join(self.history_fallbacks.values()) if len(self.history_fallbacks) <= 3
+                     else f"{len(self.history_fallbacks)} indices")
             notes.append(f"{names}: Yahoo history backfill; Shoonya quotes")
         self.status("live", " · ".join(notes) if notes else None)
 
@@ -723,6 +780,7 @@ class ShoonyaFeed(_Feed):
             self.cutoff.clear()
             self.history_errors.clear()
             self.history_fallbacks.clear()
+            self.fallback_due.clear()
             for incoming in self.incoming.values():
                 _clear_queue(incoming)
             self.status("connecting")
@@ -747,6 +805,8 @@ class ShoonyaFeed(_Feed):
                 self.cutoff[symbol] = cutoff
             else:
                 self.history_errors[symbol] = INSTRUMENTS[symbol].label
+                if INSTRUMENTS[symbol].shoonya_history_fallback == "yahoo":
+                    self.fallback_due[symbol] = self.now() + FALLBACK_REFRESH_INTERVAL
             self.ready[symbol] = connection
             self._history_status()
         elif kind == "fallback":
@@ -759,6 +819,7 @@ class ShoonyaFeed(_Feed):
             self._history_status()
         else:
             self.ready.clear()
+            self.fallback_due.clear()
             for incoming in self.incoming.values():
                 _clear_queue(incoming)
             if kind == "auth_error":
@@ -813,6 +874,7 @@ class ShoonyaFeed(_Feed):
                 self.controls.clear()
             for control in controls:
                 self._control(*control)
+            self._poll_fallback_history()
             for symbol, incoming in self.incoming.items():
                 for _ in range(500):
                     ready = self.ready.get(symbol)

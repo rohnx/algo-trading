@@ -1,0 +1,192 @@
+{
+  "checked_at": "2026-10-17T14:48:43.154233+05:30",
+  "market_hours": false,
+  "authentication": true,
+  "connection_opened": true,
+  "sector_quotes": [
+    {
+      "symbol": "^CNXPHARMA",
+      "label": "PHARMA",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXAUTO",
+      "label": "AUTO",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXFMCG",
+      "label": "FMCG",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXMETAL",
+      "label": "METAL",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXPSUBANK",
+      "label": "PSU BANK",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXREALTY",
+      "label": "REALTY",
+      "ok": true
+    },
+    {
+      "symbol": "NIFTY_CONSR_DURBL.NS",
+      "label": "CONSUMER DURABLES",
+      "ok": true
+    },
+    {
+      "symbol": "NIFTY_OIL_AND_GAS.NS",
+      "label": "OIL & GAS",
+      "ok": true
+    },
+    {
+      "symbol": "NIFTY_PVT_BANK.NS",
+      "label": "PRIVATE BANK",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXENERGY",
+      "label": "ENERGY",
+      "ok": true
+    },
+    {
+      "symbol": "NIFTY_IND_DEFENCE.NS",
+      "label": "INDIA DEFENCE",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXINFRA",
+      "label": "INFRASTRUCTURE",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXPSE",
+      "label": "PSE",
+      "ok": true
+    },
+    {
+      "symbol": "^CNXCMDT",
+      "label": "COMMODITIES",
+      "ok": true
+    },
+    {
+      "symbol": "NIFTY_CPSE.NS",
+      "label": "CPSE",
+      "ok": true
+    }
+  ],
+  "sector_frames": [
+    {
+      "symbol": "^CNXPHARMA",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXAUTO",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXFMCG",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:31:33+05:30"
+    },
+    {
+      "symbol": "^CNXMETAL",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "NIFTY_OIL_AND_GAS.NS",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:31:33+05:30"
+    },
+    {
+      "symbol": "^CNXPSUBANK",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXREALTY",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "NIFTY_CONSR_DURBL.NS",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "NIFTY_PVT_BANK.NS",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXENERGY",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:31:33+05:30"
+    },
+    {
+      "symbol": "NIFTY_IND_DEFENCE.NS",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:31:33+05:30"
+    },
+    {
+      "symbol": "^CNXINFRA",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXPSE",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "^CNXCMDT",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    },
+    {
+      "symbol": "NIFTY_CPSE.NS",
+      "type": "tk",
+      "has_price": true,
+      "has_exchange_timestamp": true,
+      "exchange_time": "2026-10-17T14:28:08+05:30"
+    }
+  ],
+  "subscribed_instruments": 21,
+  "observations": "Authenticated REST quotes and one-shot WebSocket subscription snapshots; no market-hours changing-tick latency measurement."
+}

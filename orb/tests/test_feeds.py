@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from feeds import (FeedManager, ShoonyaFeed, ShoonyaQuotes, YahooFeed, _shoonya_api,
                    _yahoo_websocket, feed_timestamp, shoonya_history, fetch_yahoo_5m_history,
                    read_shoonya_credentials, shoonya_login_url, REST_TIMEOUT,
-                   SOCKET_OPEN_TIMEOUT, SOCKET_CLOSE_TIMEOUT, TOKEN_SYMBOLS, YAHOO_SYMBOLS)
+                   SOCKET_OPEN_TIMEOUT, SOCKET_CLOSE_TIMEOUT, TOKEN_SYMBOLS, YAHOO_SYMBOLS,
+                   HISTORY_CONCURRENCY)
 from market import INSTRUMENTS, PRIMARY_SYMBOL
 from signals import IST
 
@@ -123,6 +124,7 @@ class FakeApi:
         self.history_entered = threading.Event()
         self.auth_entered = threading.Event()
         self.history_requests = []
+        self.history_condition = threading.Condition()
         self.subscriptions = []
         self.auth_calls = 0
         self.start_calls = 0
@@ -146,7 +148,9 @@ class FakeApi:
         self.subscriptions.append(instruments)
 
     def get_time_price_series(self, **kwargs):
-        self.history_requests.append(kwargs)
+        with self.history_condition:
+            self.history_requests.append(kwargs)
+            self.history_condition.notify_all()
         self.history_entered.set()
         self.history_entries[kwargs["token"]].set()
         if release := self.history_releases.get(kwargs["token"]):
@@ -159,9 +163,18 @@ class FakeApi:
             raise result
         return result
 
+    def wait_for_history(self, count):
+        with self.history_condition:
+            return self.history_condition.wait_for(lambda: len(self.history_requests) >= count, timeout=1)
+
     def close_websocket(self):
         self.close_calls += 1
         self.closed.set()
+
+
+def missing_focit_api():
+    return FakeApi(rows={instrument.shoonya_token: None if symbol == "FOCIT.BO" else [row()]
+                        for symbol, instrument in INSTRUMENTS.items()})
 
 
 class QuoteContractTests(unittest.TestCase):
@@ -237,7 +250,6 @@ class QuoteContractTests(unittest.TestCase):
             "st": "100", "et": "200", "intrv": "5"}), "timeout": REST_TIMEOUT,
             "headers": {"Authorization": "Bearer token", "Content-Type": "application/json; charset=utf-8"}})
         self.assertEqual(api._NorenApi__access_token, "token")
-        self.assertEqual(api._NorenApi__susertoken, "session")
 
     def test_shoonya_transport_keeps_unsuccessful_response_contract(self):
         api = _shoonya_api()
@@ -384,8 +396,51 @@ class ManagerTests(unittest.TestCase):
         second = ShoonyaFeed(self.manager, 2)
         yahoo = YahooFeed(self.manager, 3)
         self.assertIs(first.history_locks, second.history_locks)
+        self.assertIs(first.history_slots, second.history_slots)
+        self.assertIsNot(first.history_slots, yahoo.history_slots)
         for symbol in INSTRUMENTS:
             self.assertIsNot(first.history_locks[symbol], yahoo.history_locks[symbol])
+
+    def test_waiting_for_provider_capacity_cancels_without_starting_an_http_request(self):
+        for provider in (YahooFeed, ShoonyaFeed):
+            for stopped in (True, False):
+                with self.subTest(provider=provider.__name__, stopped=stopped):
+                    feed = provider(self.manager, 0)
+                    feed.connected, feed.connection = True, 1
+                    requested, entered = [], threading.Event()
+                    if provider is YahooFeed:
+                        feed.history_fetcher = lambda symbol: requested.append(symbol)
+                    else:
+                        feed.api = FakeApi(rows=[row()])
+                    for _ in range(HISTORY_CONCURRENCY):
+                        feed.history_slots.acquire()
+                    original = feed._is_connected
+                    checks = [0]
+                    def checked(connection):
+                        checks[0] += 1
+                        if checks[0] >= 2:
+                            entered.set()
+                        return original(connection)
+                    worker = threading.Thread(target=feed._refresh_history, args=(1, PRIMARY_SYMBOL))
+                    try:
+                        with patch.object(feed, "_is_connected", side_effect=checked):
+                            worker.start()
+                            self.assertTrue(entered.wait(1))
+                            if stopped:
+                                feed.stopped.set()
+                            else:
+                                feed.connection += 1
+                            worker.join(1)
+                        self.assertFalse(worker.is_alive())
+                        self.assertFalse(feed.history_locks[PRIMARY_SYMBOL].locked())
+                        self.assertEqual(requested, [])
+                        if provider is ShoonyaFeed:
+                            self.assertEqual(feed.api.history_requests, [])
+                    finally:
+                        feed.stopped.set()
+                        for _ in range(HISTORY_CONCURRENCY):
+                            feed.history_slots.release()
+                        worker.join(1)
 
     def test_waiting_history_cancels_when_feed_stops_or_connection_changes(self):
         for provider in (YahooFeed, ShoonyaFeed):
@@ -456,6 +511,82 @@ class ManagerTests(unittest.TestCase):
 
 
 class ShoonyaLifecycleTests(unittest.TestCase):
+    def test_history_notices_summarize_large_groups_but_keep_up_to_three_names(self):
+        hub = Hub()
+        feed = ShoonyaFeed(FeedManager(hub), 0)
+        feed.ready[PRIMARY_SYMBOL] = 1
+        fallback_names = {symbol: instrument.label for symbol, instrument in INSTRUMENTS.items()
+                          if instrument.shoonya_history_fallback == "yahoo"}
+        self.assertEqual(len(fallback_names), 16)
+        feed.history_errors = dict(fallback_names)
+        feed._history_status()
+        self.assertEqual(hub.events[-1], ("status", "live",
+                         "Shoonya 5-minute history unavailable: 16 indices"))
+        self.assertLess(len(hub.events[-1][2]), 80)
+
+        feed.history_errors.clear()
+        feed.history_fallbacks = dict(fallback_names)
+        feed._history_status()
+        self.assertEqual(hub.events[-1], ("status", "live",
+                         "16 indices: Yahoo history backfill; Shoonya quotes"))
+        self.assertLess(len(hub.events[-1][2]), 80)
+        self.assertEqual(feed.history_fallbacks, fallback_names,
+                         "compact global status must retain each instrument's provenance")
+
+        feed.history_fallbacks = {"FOCIT.BO": "FOCIT", "^CNXPHARMA": "PHARMA", "^CNXAUTO": "AUTO"}
+        feed._history_status()
+        self.assertEqual(hub.events[-1][2], "FOCIT, PHARMA, AUTO: Yahoo history backfill; Shoonya quotes")
+        feed.history_fallbacks.clear()
+        feed.history_errors = {"^CNXPHARMA": "PHARMA", "^CNXAUTO": "AUTO"}
+        feed._history_status()
+        self.assertEqual(hub.events[-1][2], "Shoonya 5-minute history unavailable: PHARMA, AUTO")
+
+    def test_sector_backfills_share_bounded_yahoo_capacity_while_all_native_quotes_flow(self):
+        sectors = {symbol for symbol, instrument in INSTRUMENTS.items()
+                   if instrument.comparison_group == "sectors"}
+        expected_fallbacks = sectors | {"FOCIT.BO"}
+        rows = {instrument.shoonya_token: None if symbol in expected_fallbacks else [row()]
+                for symbol, instrument in INSTRUMENTS.items()}
+        release, capacity_filled = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        guard = threading.Lock()
+        activity = {"active": 0, "maximum": 0}
+        requested = []
+
+        def fallback(symbol):
+            with guard:
+                activity["active"] += 1
+                activity["maximum"] = max(activity["maximum"], activity["active"])
+                requested.append(symbol)
+                if activity["active"] == HISTORY_CONCURRENCY:
+                    capacity_filled.set()
+            try:
+                release.wait(3)
+                return shoonya_history([row()], NOW, symbol=symbol)
+            finally:
+                with guard:
+                    activity["active"] -= 1
+
+        api = FakeApi(rows=rows)
+        hub, manager = self.launch(api, fallback_history_fetcher=fallback)
+        self.assertTrue(capacity_filled.wait(1))
+        self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
+        callback = api.callbacks["subscribe_callback"]
+        for symbol in sectors:
+            callback(frame(t="tk", tk=INSTRUMENTS[symbol].shoonya_token, lp="500", o="490", ft=NOW.timestamp()))
+        self.assertTrue(hub.wait(lambda: set(hub.tick_symbols) == sectors))
+        self.assertEqual(hub.fallback_histories, [])
+        release.set()
+        self.assertTrue(hub.wait(lambda: set(manager._feed.history_fallbacks) == expected_fallbacks))
+        self.assertEqual(set(requested), expected_fallbacks)
+        self.assertEqual(activity["maximum"], HISTORY_CONCURRENCY)
+        self.assertEqual({item[1] for item in hub.fallback_histories}, expected_fallbacks)
+        self.assertTrue(all(item[2] == "yahoo" for item in hub.fallback_histories))
+        self.assertTrue(expected_fallbacks.isdisjoint(manager._feed.cutoff))
+        self.assertEqual(api.start_calls, 1)
+        self.assertEqual(api.subscriptions, [SUBSCRIPTIONS])
+        self.assertEqual(len(SUBSCRIPTIONS), 21)
+
     def test_missing_focit_history_uses_an_explicit_separate_yahoo_backfill(self):
         rows = {instrument.shoonya_token: [row()] for instrument in INSTRUMENTS.values()}
         rows["75"] = None
@@ -522,6 +653,93 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         self.assertEqual(hub.tick_openings, [34000, 34000])
         self.assertEqual(hub.histories, [])
 
+    def test_focit_backfill_refreshes_without_reopening_native_history_or_socket(self):
+        clock = [NOW]
+        requested = []
+
+        def fallback(symbol):
+            requested.append(symbol)
+            return shoonya_history([row()], clock[0], symbol=symbol)
+
+        api = missing_focit_api()
+        hub, manager = self.launch(api, fallback_history_fetcher=fallback, now=lambda: clock[0])
+        self.assertTrue(hub.wait(lambda: len(hub.fallback_histories) == 1))
+        clock[0] += timedelta(minutes=4, seconds=59)
+        manager._feed.wake.set()
+        self.assertEqual(requested, ["FOCIT.BO"])
+        clock[0] += timedelta(seconds=1)
+        manager._feed.wake.set()
+        self.assertTrue(hub.wait(lambda: len(hub.fallback_histories) == 2))
+        self.assertEqual(requested, ["FOCIT.BO", "FOCIT.BO"])
+        self.assertEqual(len(api.history_requests), len(INSTRUMENTS))
+        self.assertEqual(api.start_calls, 1)
+        self.assertEqual(api.subscriptions, [SUBSCRIPTIONS])
+        self.assertNotIn("FOCIT.BO", manager._feed.cutoff)
+
+    def test_slow_periodic_backfill_keeps_quotes_flowing_and_cannot_cross_switch(self):
+        clock = [NOW]
+        requested = []
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def fallback(symbol):
+            requested.append(symbol)
+            if len(requested) > 1:
+                entered.set()
+                release.wait(3)
+                finished.set()
+            return shoonya_history([row()], clock[0], symbol=symbol)
+
+        api = missing_focit_api()
+        hub, manager = self.launch(api, fallback_history_fetcher=fallback, now=lambda: clock[0])
+        self.assertTrue(hub.wait(lambda: len(hub.fallback_histories) == 1))
+        feed = manager._feed
+        clock[0] += timedelta(minutes=5)
+        feed.wake.set()
+        self.assertTrue(entered.wait(1))
+        api.callbacks["subscribe_callback"](frame(t="tk", e="BSE", tk="75", lp="35000", o="34000", ft=clock[0].timestamp()))
+        self.assertTrue(hub.wait(lambda: hub.tick_symbols == ["FOCIT.BO"]))
+        clock[0] += timedelta(minutes=5)
+        feed.wake.set()
+        self.assertEqual(len(requested), 2, "a pending refresh cannot pile up requests")
+        manager.select_source("yahoo")
+        release.set()
+        self.assertTrue(finished.wait(1))
+        self.assertEqual(len(hub.fallback_histories), 1)
+        feed._poll_fallback_history()
+        self.assertEqual(len(requested), 2)
+
+    def test_periodic_backfill_retries_initial_failure_and_stops_overnight(self):
+        clock = [NOW]
+        requested = []
+
+        def fallback(symbol):
+            requested.append(symbol)
+            if len(requested) == 1:
+                raise RuntimeError("temporarily unavailable")
+            return shoonya_history([row()], clock[0], symbol=symbol)
+
+        hub, manager = self.launch(missing_focit_api(), fallback_history_fetcher=fallback, now=lambda: clock[0])
+        self.assertTrue(hub.wait(lambda: "FOCIT.BO" in manager._feed.fallback_due))
+        self.assertTrue(hub.wait(lambda: "FOCIT" in manager._feed.history_errors.values()))
+        self.assertTrue(hub.wait(lambda: len(requested) == 1 and not manager._feed.fallback_pending))
+        clock[0] += timedelta(minutes=5)
+        manager._feed.wake.set()
+        self.assertTrue(hub.wait(lambda: len(hub.fallback_histories) == 1))
+        self.assertTrue(hub.wait(lambda: "FOCIT.BO" in manager._feed.history_fallbacks))
+        clock[0] = NOW.replace(hour=15, minute=45)
+        manager._feed.wake.set()
+        self.assertTrue(hub.wait(lambda: len(hub.fallback_histories) == 2))
+        clock[0] = NOW.replace(hour=18)
+        manager._feed._poll_fallback_history()
+        self.assertEqual(len(requested), 3, "completed sessions do not poll all night")
+
+    def test_periodic_backfill_uses_a_small_same_day_history_request(self):
+        feed = ShoonyaFeed(FeedManager(Hub()), 0)
+        with patch("feeds.fetch_yahoo_5m_history", return_value=[]) as fetch:
+            feed.fallback_recent_fetcher("FOCIT.BO")
+        fetch.assert_called_once_with("FOCIT.BO", period="1d")
+
     def test_all_registered_indices_route_independently(self):
         api = FakeApi(rows=[row()])
         hub, manager = self.launch(api)
@@ -546,12 +764,12 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         self.assertEqual({symbol: [tick[:2] for tick, routed in zip(hub.ticks, hub.tick_symbols)
                                   if routed == symbol] for symbol in SHOONYA_SYMBOLS}, expected)
 
-    def launch(self, api, credentials=CREDENTIALS, *, fallback_history_fetcher=lambda symbol: []):
+    def launch(self, api, credentials=CREDENTIALS, *, fallback_history_fetcher=lambda symbol: [], now=lambda: NOW):
         hub = Hub()
         manager = FeedManager(hub, yahoo_factory=DummyFeed,
                               shoonya_factory=lambda manager, generation: ShoonyaFeed(
                                   manager, generation, api_factory=lambda: api,
-                                  credentials=credentials, now=lambda: NOW,
+                                  credentials=credentials, now=now,
                                   fallback_history_fetcher=fallback_history_fetcher))
         self.addCleanup(manager.stop)
         manager.select_source("shoonya")
@@ -599,7 +817,8 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         hub, manager = self.launch(api)
         self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
         self.assertEqual([history[2] for history in hub.histories], ["^NSEI"])
-        self.assertIn("BANKNIFTY", hub.events[-1][2])
+        self.assertEqual(manager._feed.history_errors["^NSEBANK"], "BANKNIFTY")
+        self.assertIn("Shoonya 5-minute history unavailable", hub.events[-1][2])
         callback = api.callbacks["subscribe_callback"]
         callback(frame(lp="999", ft=NOW.timestamp()))
         callback(frame(tk="26009", lp="200", ft=NOW.timestamp()))
@@ -647,13 +866,14 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         api.history_release = threading.Event()
         self.addCleanup(api.history_release.set)
         hub, manager = self.launch(api)
-        self.assertTrue(all(event.wait(1) for event in api.history_entries.values()))
+        self.assertTrue(api.wait_for_history(HISTORY_CONCURRENCY))
+        self.assertEqual(len(api.history_requests), HISTORY_CONCURRENCY)
         old_callback = api.callbacks["subscribe_callback"]
         manager.select_source("yahoo")
         manager.select_source("shoonya")
         self.assertTrue(hub.wait(lambda: manager._feed.connected))
         self.assertEqual(manager._feed.ready, {})
-        self.assertEqual(len(api.history_requests), len(INSTRUMENTS))
+        self.assertEqual(len(api.history_requests), HISTORY_CONCURRENCY)
         timestamp = (NOW + timedelta(seconds=1)).timestamp()
         old_callback(frame(lp="999", ft=timestamp))
         api.callbacks["subscribe_callback"](frame(lp="101", ft=timestamp))
@@ -662,7 +882,7 @@ class ShoonyaLifecycleTests(unittest.TestCase):
         self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
         self.assertTrue(hub.wait(lambda: len(hub.ticks) == 1))
         self.assertEqual(hub.ticks[0][0], 101)
-        self.assertEqual(len(api.history_requests), 2 * len(INSTRUMENTS))
+        self.assertEqual(len(api.history_requests), len(INSTRUMENTS) + HISTORY_CONCURRENCY)
         self.assertEqual(len(hub.histories), len(INSTRUMENTS))
         self.assertEqual(manager._feed.history_errors, {})
 
@@ -1025,7 +1245,7 @@ class YahooLifecycleTests(unittest.TestCase):
 
     def test_returning_yahoo_backfills_after_previous_request_finishes(self):
         hub = Hub()
-        entered = {symbol: threading.Event() for symbol in INSTRUMENTS}
+        initial_run = [True]
         release = threading.Event()
         self.addCleanup(release.set)
         calls = {symbol: 0 for symbol in INSTRUMENTS}
@@ -1037,10 +1257,11 @@ class YahooLifecycleTests(unittest.TestCase):
             return socket
 
         def history(symbol):
-            calls[symbol] += 1
-            first = calls[symbol] == 1
+            with hub.condition:
+                calls[symbol] += 1
+                first = initial_run[0]
+                hub.condition.notify_all()
             if first:
-                entered[symbol].set()
                 release.wait(3)
             return shoonya_history([row(intc="105" if first else "106")], NOW, symbol=symbol)
 
@@ -1049,15 +1270,17 @@ class YahooLifecycleTests(unittest.TestCase):
                 websocket_factory=socket_factory, history_fetcher=history, now=lambda: NOW))
         self.addCleanup(manager.stop)
         manager.select_source("yahoo")
-        self.assertTrue(all(event.wait(1) for event in entered.values()))
+        self.assertTrue(hub.wait(lambda: sum(calls.values()) == HISTORY_CONCURRENCY))
+        initial = {symbol for symbol, count in calls.items() if count}
         manager.select_source("shoonya")
+        initial_run[0] = False
         manager.select_source("yahoo")
         self.assertTrue(sockets[-1].listening.wait(1))
-        self.assertEqual(set(calls.values()), {1})
+        self.assertEqual(sum(calls.values()), HISTORY_CONCURRENCY)
         self.assertEqual(manager._feed.ready, {})
         release.set()
         self.assertTrue(hub.wait(lambda: len(manager._feed.ready) == len(INSTRUMENTS)))
-        self.assertEqual(set(calls.values()), {2})
+        self.assertEqual(calls, {symbol: 2 if symbol in initial else 1 for symbol in INSTRUMENTS})
         self.assertEqual(len(hub.histories), len(INSTRUMENTS))
         self.assertEqual({item[0][0].close for item in hub.histories}, {106})
         self.assertEqual(manager._feed.history_errors, {})
