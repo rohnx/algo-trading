@@ -26,13 +26,13 @@ From the workspace root, run:
 ```bash
 uv sync
 ```
-This sets up the virtual environment in `.venv/` and installs all locked dependencies (`pandas`, `requests`, `yfinance`).
+This sets up the virtual environment in `.venv/`, installs the `orb` package and its `orb` command, and installs the locked dependencies.
 
 ### 3. Running Scripts
 You can run any script directly using `uv run` without manually activating the virtual environment:
 ```bash
 # Run the ORB Monitor
-uv run python orb/orb_monitor.py
+uv run orb
 
 # Run the Position Sizing Calculator
 uv run python erv.py 2500 500 25
@@ -41,8 +41,22 @@ uv run python erv.py 2500 500 25
 Alternatively, you can activate the environment manually:
 ```bash
 source .venv/bin/activate
-python orb/orb_monitor.py
+orb
 ```
+
+`python -m orb` runs the same monitor. The existing checkout command
+`uv run python orb/orb_monitor.py` also remains supported.
+
+To install the monitor independently of this checkout, build and install its wheel:
+
+```bash
+uv build
+uv tool install dist/algo_trading-0.1.0-py3-none-any.whl
+orb
+```
+
+The wheel includes the monitor's Python modules and dashboard assets. The installed
+command can run from any directory.
 
 ---
 
@@ -59,7 +73,7 @@ A real-time 15-minute and 5-minute candlestick chart with two Opening Range Brea
   - Multi-session history navigation via arrow buttons or calendar date picker.
   - Quick **Today** button returning to the live trading session while streaming continues.
   - Source selection between Yahoo and Shoonya, interval switching, candle replay, and a remembered dark theme.
-- **Session Caching**: Real 5-minute history also supplies aggregated 15-minute bars. Completed sessions are cached separately by provider under `orb/data/`. Legacy 15-minute-only history can show its own setup but cannot manufacture 5-minute prices or a main signal.
+- **Session Caching**: Real 5-minute history also supplies aggregated 15-minute bars. Completed sessions are cached separately by provider, under `orb/data/` in a checkout by default. Legacy 15-minute-only history can show its own setup but cannot manufacture 5-minute prices or a main signal.
 - **Automated Session Close**: Concludes the session's final candle at 15:30 IST cleanly without awaiting additional market ticks.
 
 ### Usage
@@ -67,16 +81,33 @@ A real-time 15-minute and 5-minute candlestick chart with two Opening Range Brea
 #### Standard Live Monitor
 Starts the HTTP/WebSocket server and streams live Yahoo Finance quotes:
 ```bash
-uv run python orb/orb_monitor.py
+uv run orb
 ```
 Open **[http://localhost:8765](http://localhost:8765)** in your browser.
 
 To bind to a different port:
 ```bash
-uv run python orb/orb_monitor.py --port 9000
+uv run orb --port 9000
 ```
 
 Use the chart's play button to replay a saved session while the live feed continues.
+
+### Configuration and saved data
+
+| Location | Running from this checkout | Installed wheel |
+| --- | --- | --- |
+| Configuration directory | Workspace root | Current working directory |
+| Saved data directory | `orb/data/` in the workspace | `${XDG_DATA_HOME:-~/.local/share}/algo-trading/orb/` |
+
+Set `ORB_CONFIG_DIR` or `ORB_DATA_DIR` to override either directory. Overrides expand
+`~`; relative paths resolve from the current working directory. Checkout defaults
+remain tied to the checkout even when launched from another directory.
+
+Shoonya reads `.env`, then `shoonya/.env`, in the configuration directory; exported
+environment variables take priority over both. Telegram reads that directory's
+`.env`, with exported variables taking priority. Existing checkout credentials and
+caches keep their locations. See the [monitor notes](orb/README.md) for the required
+credential names and provider behavior.
 
 ---
 
@@ -158,14 +189,21 @@ Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You 
 ### Python Unit Tests
 Run the test suite verifying monitor logic, candle aggregation, and ORB strategy:
 ```bash
-uv run python -m unittest discover -s orb/tests
+uv run python -m unittest discover
 ```
+
+Tests are grouped by responsibility. Run an owner independently, for example
+`uv run python -m unittest orb.tests.market.test_quality`. See the
+[ownership guide](orb/tests/README.md) for the contracts and shared support.
 
 ### UI Regression Tests (Playwright)
 Run the headless browser tests verifying Canvas chart rendering and session navigation:
 ```bash
 node orb/tests/test_ui.cjs
 ```
+Each scenario starts with a fresh browser context and private fixture server.
+Use `--list` to see scenario IDs, `--case sources/retry` to run one, and
+`--reverse` to verify that scenarios are independent of execution order.
 *(Requires Node.js and Playwright. You can set `PLAYWRIGHT_PATH` or `CHROME_PATH` environment variables if non-standard binary locations are used).*
 
 ---
@@ -182,7 +220,10 @@ algo-trading/
 ├── to-do.md                     # Planned features & backlog
 └── orb/                         # NIFTY ORB Monitor
     ├── README.md                # Monitor-specific notes
+    ├── __init__.py              # Importable orb package
+    ├── __main__.py              # python -m orb entry point
     ├── orb_monitor.py           # HTTP/SSE server & dual ORB coordination
+    ├── paths.py                 # Package assets, configuration and saved-data locations
     ├── market.py                # Instrument sessions and 5m/15m candles
     ├── feeds.py                 # Yahoo and Shoonya connections
     ├── signals.py               # Closed-candle ORB strategy
@@ -193,7 +234,15 @@ algo-trading/
     │   └── motion.js
     ├── data/                    # Cached 5m/15m sessions by provider
     └── tests/                   # Test suite
-        ├── test_monitor.py
-        ├── test_signals.py
+        ├── rules/               # Opening ranges and comparison rules
+        ├── market/              # Bars, quote quality and source clocks
+        ├── sessions/            # Provider history, restoration and storage
+        ├── application/         # Session transitions and monitor journeys
+        ├── feeds/               # Provider adapters and connection lifecycle
+        ├── transport/           # HTTP and SSE contracts
+        ├── notifications/       # Durable alert delivery
+        ├── support/             # Ordinary fixtures shared by Python tests
+        ├── browser/             # Independent browser scenarios and fixtures
+        ├── test_package.py
         └── test_ui.cjs
 ```

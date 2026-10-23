@@ -3,8 +3,13 @@
 From the workspace root, run:
 
 ```sh
-uv run orb/orb_monitor.py
+uv run orb
 ```
+
+`python -m orb` runs the same monitor in an environment with the package installed.
+The existing `uv run orb/orb_monitor.py` checkout command remains supported. A wheel
+built with `uv build` includes the monitor and dashboard assets; after installing
+it, `orb` can run outside this workspace.
 
 Open http://localhost:8765. Use `--port` to choose another port. Yahoo is the
 default source. The source dropdown switches to Shoonya or back to Yahoo; only
@@ -12,6 +17,15 @@ the selected provider has an upstream socket. The selection is shared by browser
 tabs connected to this monitor process. A Shoonya failure is shown in the feed
 status. FOCIT uses labelled Yahoo history backfill when Shoonya's history service
 rejects it, while its live quotes continue through Shoonya.
+
+Configuration defaults to the workspace root in a checkout and the current working
+directory for an installed wheel. Set `ORB_CONFIG_DIR` to choose another directory.
+Saved sessions and the Telegram outbox default to the checkout's `orb/data/`, or
+`${XDG_DATA_HOME:-~/.local/share}/algo-trading/orb/` for an installed wheel.
+Set `ORB_DATA_DIR` to choose another data directory. These overrides expand `~` and
+resolve relative paths from the current working directory. Checkout defaults stay
+tied to the workspace when launched elsewhere. The data paths below are relative
+to the chosen data directory.
 
 Repeated same-day switches reuse loaded history. Target-source stream data can
 paint before the switch response arrives, and an older response cannot replace
@@ -23,8 +37,9 @@ loads, backfills, bar closes, and recovery. Unchanged saved bars are not rewritt
 
 Shoonya uses the same OAuth SDK and environment variables as `shoonya/live_feed.py`:
 `SHOONYA_CLIENT_ID`, `SHOONYA_USER_ID`, `SHOONYA_SECRET_CODE`, and a fresh
-`SHOONYA_AUTH_CODE`. The adapter reads the workspace `.env` and `shoonya/.env`
-without overwriting exported variables. Both providers subscribe to all 21
+`SHOONYA_AUTH_CODE`. The adapter reads `.env`, then `shoonya/.env`, in the
+configuration directory, with exported variables taking priority over both.
+Both providers subscribe to all 21
 indices through one socket. Comparison tabs choose what is displayed while
 prices continue collecting for both groups.
 
@@ -73,7 +88,7 @@ snapshots for all 15 sectors. This confirms connection and routing, without
 measuring changing live ticks during an open market. The sanitized
 [connection check](research/sector-connection-check-2026-10-17.json) records it.
 
-After updating this code, restart `uv run orb/orb_monitor.py` and refresh the
+After updating this code, restart `uv run orb` and refresh the
 browser tab so both the expanded registry and new tab controls load.
 
 Midcap Select is distinct from Midcap 50. Yahoo's `^CNXFIN` is the Financial
@@ -117,7 +132,7 @@ mean every historical candle came from Shoonya.
 An authenticated session is reused for same-day source switches; expired sessions,
 changed credentials, and a new IST day require a fresh login. Editing the `.env`
 auth code takes effect the next time Shoonya is selected.
-You can also start directly with `.venv/bin/python orb/orb_monitor.py --source shoonya`.
+You can also start directly with `uv run orb --source shoonya`.
 
 When Shoonya reports a login error, **Login help** beside the feed status opens a
 compact recovery panel. It displays your configured client ID and OAuth link; update
@@ -239,7 +254,7 @@ Disconnects and missing quotes invalidate affected bars, and stale prices cannot
 confirm a close. The final candle still closes at 15:30 without another quote.
 
 Telegram alerts use the main dual-ORB signal. Add `TELEGRAM_TOKEN` and
-`TELEGRAM_CHAT_ID` to the workspace `.env`, then restart the monitor. For a private
+`TELEGRAM_CHAT_ID` to the configuration directory's `.env`, then restart the monitor. For a private
 chat, open your bot in Telegram and send `/start` before enabling delivery.
 Exported environment variables take priority over `.env`. Missing configuration
 disables Telegram and prints the missing variable names at startup.
@@ -255,7 +270,7 @@ The local `/api/session` response includes `telegram_status` for delivery
 diagnostics, without credentials.
 
 Delivery runs on a worker so Telegram cannot block quotes or bar closes. Its
-durable outbox is saved under `data/notifications/`. Transient network/server
+durable outbox is saved under `notifications/`. Transient network/server
 failures and rate limits retry up to five attempts; pending alerts can resume
 after a restart within ten minutes of the signal. Older pending alerts expire.
 Permanent or exhausted failures are logged without credentials and remain
@@ -278,8 +293,8 @@ disable these display transitions.
 Yahoo is queried for a 60-day period of 5-minute history, which is also aggregated
 into 15-minute bars. Shoonya's index history is loaded where available. Each
 instrument loads independently, so missing comparison history does not hold up
-NIFTY. Completed sessions are saved separately under `data/yahoo/` and
-`data/shoonya/`, with native 5-minute bars in each provider's `5m/` directory.
+NIFTY. Completed sessions are saved separately under `yahoo/` and
+`shoonya/`, with native 5-minute bars in each provider's `5m/` directory.
 Sessions older than 60 calendar days are removed at startup and each IST date
 rollover, using the session date in the filename. The date exactly 60 days ago
 is retained. Retention covers both providers, both intervals, and legacy files;
@@ -296,9 +311,16 @@ the former command-line replay and quote-pipe entry points have been removed.
 Regression checks:
 
 ```sh
-.venv/bin/python -m unittest discover -s orb/tests
+.venv/bin/python -m unittest discover
 node orb/tests/test_ui.cjs
 ```
+
+Python cases belong to explicit rule, instrument, provider-session, adapter,
+application, transport, or notification owners. Each module runs independently;
+the [test ownership guide](tests/README.md) describes the contracts and fixtures.
+Browser scenarios have fresh contexts and private fixture state. Use
+`node orb/tests/test_ui.cjs --case sources/retry` to run one scenario,
+`--list` to list them, or `--reverse` to check order independence.
 
 The browser checks require Playwright and Chrome (the bundled Playwright runtime
 is discovered automatically where available). Set `PLAYWRIGHT_PATH` to a
@@ -310,5 +332,11 @@ requests to Yahoo or Shoonya. Adapter tests use mock sockets and mock login.
 and cache logic. `feeds.py` routes provider data through that registry;
 `orb_monitor.py` coordinates the instruments and owns NIFTY's ORB strategies;
 `comparison.py` evaluates the comparison indices' close-only breakout states.
+The monitor owns session transitions and publication: elapsed candles persist
+before close packets and alerts, then an admitted quote updates the live view.
+Provider adapters supply history and quotes; the monitor decides which history
+updates publish a complete initial view or a changed comparison, and which
+primary confirmations may notify. The native bar engine returns closed batches
+without calling back into the monitor.
 Adding an instrument uses the same state engine, feed paths, and chart renderer;
 the registry defines its canonical symbol, label, and provider identifiers.

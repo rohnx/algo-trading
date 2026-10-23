@@ -1,19 +1,19 @@
-"""Yahoo comparison backfills must not become Shoonya quotes or saved bars."""
+"""Yahoo fallback composition preserves native quotes, caches, and provenance."""
 
 from dataclasses import replace
 from datetime import timedelta
 import json
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import Mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from orb.market import INSTRUMENTS, PRIMARY_SYMBOL
+from orb.orb_monitor import MonitorHub
 
-from market import INSTRUMENTS, PRIMARY_SYMBOL
-from orb_monitor import MonitorHub
-from test_features import Clock, at, bar
+from orb.tests.support.clock import Clock
+from orb.tests.support.market import at, bar
+
 
 FOCIT = "FOCIT.BO"
 
@@ -26,7 +26,10 @@ def history(count=75, *, day="2026-10-05", price=500):
 class FallbackHistoryTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock(at(18, 0))
-        self.hub = MonitorHub(now=self.clock)
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        self.cache_root = Path(cache.name)
+        self.hub = MonitorHub(now=self.clock, cache_dir=self.cache_root)
         self.hub.activate_source("shoonya")
         self.hub.set_feed_status("live")
 
@@ -47,7 +50,8 @@ class FallbackHistoryTests(unittest.TestCase):
                 native = [replace(candle, symbol=symbol) for candle in history(10, price=800)[9:]]
                 self.hub.seed_historical_candles(native, 5, symbol=symbol)
                 self.hub.process_tick(900, symbol=symbol, session_open=700)
-                native_before = self.hub.instruments[symbol].snapshot(self.clock(), "live")
+                native_cache = self.cache_root / "shoonya" / symbol.lstrip("^") / "5m" / "2026-10-05.json"
+                native_before = native_cache.read_bytes()
                 self.assertTrue(self.hub.seed_fallback_history(backfill, symbol=symbol))
                 state = self.hub.snapshot()["instruments"][symbol]
                 self.assertEqual(state["comparison_group"], "sectors")
@@ -62,7 +66,7 @@ class FallbackHistoryTests(unittest.TestCase):
                 self.assertEqual(state["candles_5m"][-1]["close"], native[-1].close)
                 self.assertEqual(state["breakout"]["direction"], "BULLISH")
                 self.assertEqual(state["breakout"]["range_high"], 509)
-                self.assertEqual(self.hub.instruments[symbol].snapshot(self.clock(), "live"), native_before)
+                self.assertEqual(native_cache.read_bytes(), native_before)
         self.assertEqual(self.hub.snapshot()["instruments"][PRIMARY_SYMBOL], primary_before)
         self.assertEqual(self.hub.signals, [])
 
@@ -169,6 +173,8 @@ class FallbackHistoryTests(unittest.TestCase):
             self.clock.value = at(10, 12) + timedelta(minutes=minute)
             self.hub.process_tick(700 + minute, symbol=FOCIT)
         native = self.hub.instruments[FOCIT].snapshot(self.clock(), "live")
+        native_cache = self.cache_root / "shoonya" / FOCIT / "5m" / "2026-10-05.json"
+        native_before = native_cache.read_bytes()
         self.seed(history(13))
         result = self.focit()
         self.assertIn(at(10, 0).isoformat(), [c["start_time"] for c in result["candles_5m"]])
@@ -180,7 +186,7 @@ class FallbackHistoryTests(unittest.TestCase):
         for candle in result["candles_5m"]:
             if candle["start_time"] in native_valid:
                 self.assertEqual(candle, native_valid[candle["start_time"]])
-        self.assertEqual(self.hub.instruments[FOCIT].snapshot(self.clock(), "live"), native)
+        self.assertEqual(native_cache.read_bytes(), native_before)
 
     def test_valid_native_bars_win_and_invalid_native_bars_use_valid_fallback(self):
         native = history(6, price=800)
@@ -316,7 +322,3 @@ class FallbackHistoryTests(unittest.TestCase):
         self.seed()
         self.assertEqual(self.hub.snapshot()["setups"], before)
         notifier.enqueue.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()

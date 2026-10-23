@@ -8,5 +8,5 @@ data/
 .venv/
 pyproject.toml
 .python-version
-
+.agents/
 to-do.md

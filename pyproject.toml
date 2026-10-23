@@ -1,7 +1,7 @@
 [project]
 name = "algo-trading"
 version = "0.1.0"
-description = "Add your description here"
+description = "Live opening-range breakout monitor for Indian markets"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,8 +13,13 @@ dependencies = [
 ]
 
 [project.scripts]
-algo-trading = "algo_trading:main"
+orb = "orb.orb_monitor:main"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "orb"
+module-root = ""
+source-exclude = ["/orb/tests", "/orb/research", "/orb/data", ".env", ".env.*"]

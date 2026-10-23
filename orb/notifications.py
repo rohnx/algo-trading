@@ -12,14 +12,13 @@ import logging
 import math
 import os
 from pathlib import Path
-import queue
 import threading
 
 import requests
 
-from signals import IST
+from .signals import IST, in_ist
+from .paths import config_dir, data_dir
 
-ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger(__name__)
 REQUEST_TIMEOUT = (3, 10)
 RETRY_DELAYS = (1, 2, 4, 8)
@@ -31,13 +30,13 @@ MAX_ATTEMPTS = 5
 def read_telegram_credentials():
     """Read workspace .env without changing or overriding exported variables."""
     from dotenv import dotenv_values
-    values = {**dotenv_values(ROOT / ".env"), **os.environ}
+    values = {**dotenv_values(config_dir() / ".env"), **os.environ}
     return {key: values.get(key, "") for key in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")}
 
 
 def _ist(value):
     timestamp = datetime.fromisoformat(value) if isinstance(value, str) else value
-    return timestamp.replace(tzinfo=IST) if timestamp.tzinfo is None else timestamp.astimezone(IST)
+    return in_ist(timestamp)
 
 
 def _number(value):
@@ -100,15 +99,14 @@ class TelegramNotifier:
         self._token = str((credentials.get("TELEGRAM_TOKEN", "") if token is None else token) or "").strip()
         self._chat_id = str((credentials.get("TELEGRAM_CHAT_ID", "") if chat_id is None else chat_id) or "").strip()
         self.now = now or (lambda: datetime.now(IST))
-        self.directory = Path(cache_dir if cache_dir is not None else ROOT / "orb" / "data") / "notifications"
+        self.directory = Path(cache_dir if cache_dir is not None else data_dir()) / "notifications"
         self.outbox_path = self.directory / "telegram-outbox.json"
         self._enabled = bool(self._token and self._chat_id)
         missing = [name for name, value in (("TELEGRAM_TOKEN", self._token), ("TELEGRAM_CHAT_ID", self._chat_id))
                    if not value]
         self._status = "Telegram ready" if self._enabled else f"Telegram disabled: add {' and '.join(missing)} to .env"
-        self._queue = queue.Queue()
-        self._known = set()
         self._records = {}
+        self._dirty = False
         self._lock = threading.Lock()
         self._wake, self._stop = threading.Event(), threading.Event()
         self._thread = None
@@ -134,7 +132,6 @@ class TelegramNotifier:
             self._disable("Telegram disabled: outbox unavailable, invalid, or already used by another monitor")
             self._release_file_lock()
             return
-        self._known = set(self._records)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="orb-telegram", daemon=True)
         self._thread.start()
@@ -159,11 +156,11 @@ class TelegramNotifier:
         except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
             return False
         with self._lock:
-            if self._stop.is_set() or key in self._known:
+            if self._stop.is_set() or key in self._records:
                 return False
-            self._known.add(key)
-            self._queue.put_nowait({"key": key, "timestamp": timestamp.isoformat(), "text": text,
-                                   "state": "pending", "attempts": 0, "next_attempt": now.timestamp()})
+            self._records[key] = {"key": key, "timestamp": timestamp.isoformat(), "text": text,
+                                  "state": "pending", "attempts": 0, "next_attempt": now.timestamp()}
+            self._dirty = True
             self._status = "Telegram enabled: alert queued"
         self._wake.set()
         return True
@@ -189,10 +186,12 @@ class TelegramNotifier:
         self._records = data["records"]
 
     def _persist(self):
+        with self._lock:
+            records = self._records.copy()
         temporary = self.outbox_path.with_suffix(".tmp")
         with temporary.open("w") as output:
             os.chmod(temporary, 0o600)
-            json.dump({"version": 1, "records": self._records}, output)
+            json.dump({"version": 1, "records": records}, output)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, self.outbox_path)
@@ -202,41 +201,37 @@ class TelegramNotifier:
         finally:
             os.close(descriptor)
 
-    def _drain(self):
-        changed = False
-        while True:
-            try:
-                record = self._queue.get_nowait()
-            except queue.Empty:
-                return changed
-            self._records[record["key"]] = record
-            changed = True
+    def _take_records(self):
+        with self._lock:
+            changed, self._dirty = self._dirty, False
+            return list(self._records.values()), changed
 
     def _run(self):
         try:
             while not self._stop.is_set():
-                changed = self._drain()
+                records, changed = self._take_records()
                 now = _ist(self.now())
-                for record in self._records.values():
-                    if record["state"] == "pending":
-                        timestamp = _ist(record["timestamp"])
-                        if timestamp.date() != now.date() or now - timestamp > DELIVERY_MAX_AGE:
-                            record["state"], changed = "expired", True
-                            LOG.warning("Telegram skipped an expired NIFTY alert")
-                        elif record["attempts"] >= MAX_ATTEMPTS:
-                            record["state"], changed = "failed", True
+                for record in records:
+                    if record["state"] != "pending":
+                        continue
+                    timestamp = _ist(record["timestamp"])
+                    if timestamp.date() != now.date() or now - timestamp > DELIVERY_MAX_AGE:
+                        record["state"], changed = "expired", True
+                        LOG.warning("Telegram skipped an expired NIFTY alert")
+                    elif record["attempts"] >= MAX_ATTEMPTS:
+                        record["state"], changed = "failed", True
                 if changed:
                     self._persist()
-                pending = [record for record in self._records.values() if record["state"] == "pending"]
-                due = [record for record in pending if record["next_attempt"] <= now.timestamp()]
-                if due:
-                    self._deliver(min(due, key=lambda record: record["next_attempt"]))
+                next_record = min((record for record in records if record["state"] == "pending"),
+                                  key=lambda record: record["next_attempt"], default=None)
+                delay = next_record["next_attempt"] - now.timestamp() if next_record is not None else 1
+                if delay <= 0:
+                    self._deliver(next_record)
                     continue
-                delay = min((record["next_attempt"] - now.timestamp() for record in pending), default=1)
                 self._wake.wait(max(0.01, min(delay, 1)))
                 self._wake.clear()
             # A graceful stop retains queued work without starting another request.
-            if self._drain():
+            if self._take_records()[1]:
                 self._persist()
         except Exception:
             # requests exceptions can contain a token-bearing URL; never log them.

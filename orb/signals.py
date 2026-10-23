@@ -1,6 +1,6 @@
 """Opening ranges with independently configured closed-bar confirmation."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, time, timezone, timedelta
 from enum import Enum
 
@@ -45,17 +45,11 @@ class Candle:
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
-            "open": float(round(self.open, 2)),
-            "high": float(round(self.high, 2)),
-            "low": float(round(self.low, 2)),
-            "close": float(round(self.close, 2)),
+            **{name: float(round(getattr(self, name), 2)) for name in ("open", "high", "low", "close")},
             "volume": int(self.volume),
-            "start_time": self.start_time.isoformat(),
-            "end_time": self.end_time.isoformat(),
-            "is_closed": self.is_closed,
-            "slot": int(self.slot),
-            "is_complete": self.is_complete,
-            "close_is_valid": self.close_is_valid,
+            "start_time": self.start_time.isoformat(), "end_time": self.end_time.isoformat(),
+            "is_closed": self.is_closed, "slot": int(self.slot),
+            "is_complete": self.is_complete, "close_is_valid": self.close_is_valid,
         }
 
 
@@ -78,26 +72,16 @@ class Signal:
     setup_id: str | None = None
 
     def to_dict(self) -> dict:
-        return {
-            "strategy": self.strategy,
-            "symbol": self.symbol,
-            "direction": self.direction.value,
-            "signal_type": self.signal_type,
-            "price": float(round(self.price, 2)),
-            "level": float(round(self.level, 2)),
-            "diff": float(round(self.diff, 2)),
-            "timestamp": self.timestamp.isoformat(),
-            "message": self.message,
-            "stop_loss": float(round(self.stop_loss, 2)) if self.stop_loss else None,
-            "target_1r": float(round(self.target_1r, 2)) if self.target_1r else None,
-            "target_2r": float(round(self.target_2r, 2)) if self.target_2r else None,
-            "range_minutes": self.range_minutes,
-            "confirmation_minutes": self.confirmation_minutes,
-            "setup_id": self.setup_id,
-        }
+        data = {field.name: getattr(self, field.name) for field in fields(Signal)}
+        data.update(direction=self.direction.value, timestamp=self.timestamp.isoformat())
+        for name in ("price", "level", "diff"):
+            data[name] = float(round(data[name], 2))
+        for name in ("stop_loss", "target_1r", "target_2r"):
+            data[name] = float(round(data[name], 2)) if data[name] else None
+        return data
 
 
-def _ist(value: datetime) -> datetime:
+def in_ist(value: datetime) -> datetime:
     return value.replace(tzinfo=IST) if value.tzinfo is None else value.astimezone(IST)
 
 
@@ -147,7 +131,7 @@ class OpeningRangeBreakoutStrategy:
         return True
 
     def on_candle_close(self, candle: Candle) -> Signal | None:
-        start, end = _ist(candle.start_time), _ist(candle.end_time)
+        start, end = in_ist(candle.start_time), in_ist(candle.end_time)
         if not candle.is_closed:
             return None
         session_start = datetime.combine(start.date(), time(9, 15), IST)
@@ -171,7 +155,7 @@ class OpeningRangeBreakoutStrategy:
         if end <= range_end:
             if self.range_locked or not candle.is_complete:
                 return None
-            self.range_candles = [c for c in self.range_candles if _ist(c.start_time) != start]
+            self.range_candles = [c for c in self.range_candles if in_ist(c.start_time) != start]
             self.range_candles.append(candle)
             self.orb_high = max(c.high for c in self.range_candles)
             self.orb_low = min(c.low for c in self.range_candles)
@@ -179,16 +163,12 @@ class OpeningRangeBreakoutStrategy:
                 session_start + slot * interval
                 for slot in range(self.range_minutes // self.confirmation_minutes)
             }
-            self.range_locked = {_ist(c.start_time) for c in self.range_candles} == expected_starts
+            self.range_locked = {in_ist(c.start_time) for c in self.range_candles} == expected_starts
             return None
         if self.range_locked:
             if self._last_confirmation_end is not None and end < self._last_confirmation_end:
                 return None
-            self.confirmation_direction = (
-                SignalDirection.BULLISH if candle.close > self.orb_high + self.buffer_pts
-                else SignalDirection.BEARISH if candle.close < self.orb_low - self.buffer_pts
-                else SignalDirection.NEUTRAL
-            )
+            self.confirmation_direction = self._direction(candle.close)
             self.confirmed_at = end
             self.confirmation_price = candle.close
             self._last_confirmation_end = end
@@ -196,7 +176,7 @@ class OpeningRangeBreakoutStrategy:
         return None
 
     def on_tick(self, tick: Tick, active_candle: Candle | None = None) -> None:
-        timestamp = _ist(tick.time)
+        timestamp = in_ist(tick.time)
         if not time(9, 15) <= timestamp.time() < time(15, 30):
             return
         if not self._start_day(timestamp) or self.range_locked:
@@ -205,29 +185,33 @@ class OpeningRangeBreakoutStrategy:
         range_end = session_start + timedelta(minutes=self.range_minutes)
         if timestamp < range_end:
             high = low = tick.price
-            if (active_candle and _ist(active_candle.start_time).date() == timestamp.date()
-                    and session_start <= _ist(active_candle.start_time)
-                    and _ist(active_candle.end_time) <= range_end
+            if (active_candle and in_ist(active_candle.start_time).date() == timestamp.date()
+                    and session_start <= in_ist(active_candle.start_time)
+                    and in_ist(active_candle.end_time) <= range_end
                     and active_candle.end_time - active_candle.start_time
                     == timedelta(minutes=self.confirmation_minutes)
-                    and _ist(active_candle.start_time) <= timestamp < _ist(active_candle.end_time)):
+                    and in_ist(active_candle.start_time) <= timestamp < in_ist(active_candle.end_time)):
                 high, low = max(high, active_candle.high), min(low, active_candle.low)
             self.orb_high = high if self.orb_high is None else max(self.orb_high, high)
             self.orb_low = low if self.orb_low is None else min(self.orb_low, low)
 
-    def _check_breakout(self, price: float, timestamp: datetime, symbol: str) -> Signal | None:
+    def _direction(self, price):
         if price > self.orb_high + self.buffer_pts:
-            direction, level, stop, sign = SignalDirection.BULLISH, self.orb_high, self.orb_low, 1
-            if self.one_signal_per_direction and self.bullish_triggered:
-                return None
-            self.bullish_triggered = True
-        elif price < self.orb_low - self.buffer_pts:
-            direction, level, stop, sign = SignalDirection.BEARISH, self.orb_low, self.orb_high, -1
-            if self.one_signal_per_direction and self.bearish_triggered:
-                return None
-            self.bearish_triggered = True
-        else:
+            return SignalDirection.BULLISH
+        if price < self.orb_low - self.buffer_pts:
+            return SignalDirection.BEARISH
+        return SignalDirection.NEUTRAL
+
+    def _check_breakout(self, price: float, timestamp: datetime, symbol: str) -> Signal | None:
+        direction = self._direction(price)
+        if direction == SignalDirection.NEUTRAL:
             return None
+        latch = f"{direction.value.lower()}_triggered"
+        if self.one_signal_per_direction and getattr(self, latch):
+            return None
+        setattr(self, latch, True)
+        bullish = direction == SignalDirection.BULLISH
+        level, stop, sign = (self.orb_high, self.orb_low, 1) if bullish else (self.orb_low, self.orb_high, -1)
         span = self.orb_high - self.orb_low
         kind = "BREAKOUT" if sign > 0 else "BREAKDOWN"
         self.last_signal = Signal(
@@ -250,20 +234,14 @@ class OpeningRangeBreakoutStrategy:
         return self.last_signal
 
     def get_state(self) -> dict:
-        span = (self.orb_high - self.orb_low) if (self.orb_high is not None and self.orb_low is not None) else 0.0
-        return {
-            "strategy": self.name,
-            "range_minutes": self.range_minutes,
-            "confirmation_minutes": self.confirmation_minutes,
-            "setup_id": self.setup_id,
-            "orb_high": float(round(self.orb_high, 2)) if self.orb_high is not None else None,
-            "orb_low": float(round(self.orb_low, 2)) if self.orb_low is not None else None,
-            "range_span": float(round(span, 2)),
-            "range_locked": self.range_locked,
-            "bullish_triggered": self.bullish_triggered,
-            "bearish_triggered": self.bearish_triggered,
-            "confirmation_direction": self.confirmation_direction.value if self.confirmation_direction else None,
-            "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
-            "confirmation_price": float(round(self.confirmation_price, 2)) if self.confirmation_price is not None else None,
-            "last_signal": self.last_signal.to_dict() if self.last_signal else None,
-        }
+        state = {name: getattr(self, name) for name in (
+            "range_minutes", "confirmation_minutes", "setup_id", "range_locked",
+            "bullish_triggered", "bearish_triggered")}
+        for name in ("orb_high", "orb_low", "confirmation_price"):
+            value = getattr(self, name)
+            state[name] = float(round(value, 2)) if value is not None else None
+        span = self.orb_high - self.orb_low if self.orb_high is not None and self.orb_low is not None else 0.0
+        return {**state, "strategy": self.name, "range_span": float(round(span, 2)),
+                "confirmation_direction": self.confirmation_direction.value if self.confirmation_direction else None,
+                "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
+                "last_signal": self.last_signal.to_dict() if self.last_signal else None}

@@ -9,22 +9,28 @@ import queue
 import threading
 import time
 from datetime import date, datetime, time as dtime, timedelta
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from itertools import groupby
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from signals import IST, OpeningRangeBreakoutStrategy, Signal, SignalDirection, Tick
-from market import (INSTRUMENTS, PRIMARY_SYMBOL, InstrumentState, in_ist,
-                    history_cutoff, prune_session_files)
-from history import merge_fallback_history
-from comparison import close_only_breakout
+# Preserve the checkout script while loading the same package as the installed command.
+if __name__ == "__main__" and not __package__:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from orb.orb_monitor import main
+    raise SystemExit(main())
+
+from .signals import IST, OpeningRangeBreakoutStrategy, Signal, SignalDirection, Tick
+from .market import (INSTRUMENTS, PRIMARY_SYMBOL, InstrumentState, in_ist,
+                     history_cutoff, prune_session_files)
+from .comparison import close_only_breakout
+from .paths import PACKAGE_DIR, data_dir
 
 PORT = 8765
 SYMBOL = PRIMARY_SYMBOL
-ROOT = Path(__file__).resolve().parent
 HISTORY_NOTE = "Yahoo supplies 5-minute history; saved sessions are retained for 60 calendar days."
 SOURCE_NAMES = {"yahoo": "Yahoo Finance · ^NSEI", "shoonya": "Shoonya · NIFTY 50"}
 
@@ -76,18 +82,19 @@ class DualORBState:
         return emitted
 
     def _confirm_agreement(self, timestamp):
-        states = self.get_setups()
-        direction = states["15"]["confirmation_direction"]
+        first = self.strategies["15"].confirmation_direction
+        direction = first.value if first else None
         if direction not in ("BULLISH", "BEARISH") or direction in self.triggered:
             return None
-        for state in states.values():
-            if state["confirmation_direction"] != direction or not state["confirmed_at"]:
-                return None
-            confirmed = datetime.fromisoformat(state["confirmed_at"])
+        for strategy in self.strategies.values():
             # A skipped close cannot leave an older leg eligible indefinitely.
-            if not timedelta(0) <= timestamp - confirmed < timedelta(minutes=state["confirmation_minutes"]):
+            if (strategy.confirmation_direction != direction or strategy.confirmed_at is None
+                    or not timedelta(0) <= timestamp - strategy.confirmed_at
+                    < timedelta(minutes=strategy.confirmation_minutes)):
                 return None
-        latest = max(states.values(), key=lambda state: state["confirmed_at"])
+        latest_key = max(self.strategies, key=lambda key: self.strategies[key].confirmed_at)
+        states = {key: strategy.get_state() for key, strategy in self.strategies.items()}
+        latest = states[latest_key]
         price = latest["confirmation_price"]
         level = latest["orb_high"] if direction == "BULLISH" else latest["orb_low"]
         self.triggered.add(direction)
@@ -108,6 +115,8 @@ def _primary_field(name):
 
 
 class MonitorHub:
+    """Own session transitions and their ordered stream and notification effects."""
+
     date = _primary_field("date")
     sessions = _primary_field("sessions")
     sessions_5m = _primary_field("sessions_5m")
@@ -137,14 +146,8 @@ class MonitorHub:
         self._comparison_breakouts = {}
         prune_session_files(cache_dir, history_cutoff(self.now()))
         self.instruments = {symbol: InstrumentState(instrument, now=self.now,
-            cache_root=cache_dir,
-            on_close=lambda closed, symbol=symbol: self._bars_closed(symbol, closed))
+            cache_root=cache_dir)
             for symbol, instrument in INSTRUMENTS.items()}
-        self._fallback_instruments = {symbol: InstrumentState(instrument, now=self.now,
-            cache_root=cache_dir) for symbol, instrument in INSTRUMENTS.items()
-            if instrument.shoonya_history_fallback == "yahoo"}
-        for state in self._fallback_instruments.values():
-            state.seed_historical_candles([], interval_minutes=5)
         self._market_closed = self._market_status() == "closed"
 
     @property
@@ -161,10 +164,6 @@ class MonitorHub:
         self._notification_keys.clear()
         for state in self.instruments.values():
             state.reset(session_date)
-        for state in self._fallback_instruments.values():
-            # Fallback responses already persisted their completed bars. This
-            # view may be inactive while Yahoo itself writes a newer session.
-            state.reset(session_date, save=False)
         self.breakouts.reset_day()
 
     def activate_source(self, source):
@@ -177,52 +176,8 @@ class MonitorHub:
             self._comparison_breakouts.clear()
             self.source_name = SOURCE_NAMES[source]
             self.feed_status, self.feed_error = "connecting", None
-            if source == "yahoo":
-                # Yahoo history fetched while Shoonya was selected is newer
-                # than Yahoo's inactive in-memory cache. Hydrate that cache
-                # before activation so a slow/failed refresh cannot discard it.
-                for symbol, fallback in self._fallback_instruments.items():
-                    saved = self.instruments[symbol]._source_sessions.get("yahoo")
-                    if saved is None:
-                        continue
-                    clock = fallback.market_time()
-                    for target, sessions in ((saved[0], fallback.sessions),
-                                             (saved[1], fallback.sessions_5m)):
-                        for day, bars in sessions.items():
-                            merged = {bar.start_time: bar for bar in target.get(day, [])}
-                            for bar in bars:
-                                if not (bar.is_closed and bar.is_complete and bar.close_is_valid
-                                        and bar.end_time <= clock):
-                                    continue
-                                previous = merged.get(bar.start_time)
-                                if not (previous and previous.is_closed and previous.is_complete
-                                        and previous.close_is_valid):
-                                    merged[bar.start_time] = replace(bar)
-                            if merged:
-                                target[day] = sorted(merged.values(), key=lambda bar: bar.start_time)
             for state in self.instruments.values():
                 state.activate_source(source)
-            # The source switch has flushed the most recent Yahoo sessions.
-            # Refresh an isolated Yahoo view without rereading old disk history.
-            # Fallback bars never enter Shoonya's engine or its cache.
-            if source == "shoonya":
-                for symbol, fallback in self._fallback_instruments.items():
-                    saved = self.instruments[symbol]._source_sessions.get("yahoo")
-                    if saved:
-                        for target, sessions in ((fallback.sessions, saved[0]),
-                                                 (fallback.sessions_5m, saved[1])):
-                            for day, bars in sessions.items():
-                                merged = {bar.start_time: bar for bar in target.get(day, [])}
-                                for bar in bars:
-                                    previous = merged.get(bar.start_time)
-                                    previous_valid = (previous and previous.is_closed
-                                        and previous.is_complete and previous.close_is_valid)
-                                    incoming_valid = bar.is_closed and bar.is_complete and bar.close_is_valid
-                                    if not previous_valid or incoming_valid:
-                                        merged[bar.start_time] = replace(bar)
-                                target[day] = sorted(merged.values(), key=lambda bar: bar.start_time)
-                    fallback.reset(self.date, save=False)
-                    fallback._seed_5m([], session_date=self.date)
             self._rebuild_strategy()
             self.broadcast({"type": "session", **self._snapshot()})
 
@@ -231,25 +186,21 @@ class MonitorHub:
             self.feed_status, self.feed_error = status, error
             if status in ("disconnected", "error"):
                 for state in self.instruments.values():
-                    for candle in (state.active_candle, state.active_candle_5m):
-                        if candle:
-                            candle.is_complete = candle.close_is_valid = False
+                    state.invalidate_active_bars()
             self.broadcast({"type": "status", **self._snapshot()})
 
     def advance_time(self, now=None):
         """Close elapsed bars and clear yesterday even if no quotes arrive."""
         now = in_ist(now or self.now())
         with self.lock:
-            for state in self.instruments.values():
-                state._close_elapsed(state.market_time(now))
+            for symbol, state in self.instruments.items():
+                self._bars_closed(symbol, state.advance_time(now))
             market_closed = now.weekday() >= 5 or not dtime(9, 15) <= now.time() < dtime(15, 30)
             if now.date().isoformat() != self.date:
                 self._reset(now.date().isoformat())
                 cutoff = history_cutoff(now)
                 prune_session_files(self.cache_dir, cutoff)
                 for state in self.instruments.values():
-                    state.prune_history(cutoff)
-                for state in self._fallback_instruments.values():
                     state.prune_history(cutoff)
                 self.broadcast({"type": "session", **self._snapshot()})
             elif market_closed != self._market_closed:
@@ -263,57 +214,36 @@ class MonitorHub:
         fresh = self.last_tick_time and 0 <= (now - self.last_tick_time).total_seconds() <= 90
         return "live" if fresh and self.feed_status not in ("connecting", "disconnected", "error") else "waiting"
 
-    def _snapshot(self):
-        instruments = self._instrument_snapshots()
-        return {
-            "date": self.date,
-            "today": in_ist(self.now()).date().isoformat(),
-            "source": self.source_name,
-            "source_id": self.source_id,
-            "source_generation": self.source_generation,
-            "source_epoch": self.source_epoch,
-            "feed_status": self.feed_status,
-            "feed_error": self.feed_error,
-            "telegram_status": getattr(self.notifier, "status", None),
-            **instruments[PRIMARY_SYMBOL],
-            "primary_symbol": PRIMARY_SYMBOL,
-            "instruments": instruments,
-            "orb_high": self.strategy.orb_high,
-            "orb_low": self.strategy.orb_low,
-            "range_locked": self.strategy.range_locked,
-            "setups": self.breakouts.get_setups(),
-            "signals": [s.to_dict() for s in self.signals],
-            "market_status": self._market_status(),
+    def _snapshot(self, session_date=None):
+        day = session_date or self.date
+        historical = day != self.date
+        instruments = {symbol: self._instrument_snapshot(symbol, day) for symbol in self.instruments}
+        breakouts = self.breakouts
+        if historical:
+            breakouts = DualORBState()
+            breakouts.feed_closed([(interval, candle)
+                for interval, sessions in ((15, self.sessions), (5, self.sessions_5m))
+                for candle in sessions.get(day, []) if candle.is_closed])
+        result = {
+            "date": day, "today": in_ist(self.now()).date().isoformat(),
+            "source": f"{SOURCE_NAMES[self.source_id]} · history" if historical else self.source_name,
+            "source_id": self.source_id, "source_generation": self.source_generation,
+            "source_epoch": self.source_epoch, "feed_status": self.feed_status,
+            "feed_error": self.feed_error, **instruments[PRIMARY_SYMBOL],
+            "primary_symbol": PRIMARY_SYMBOL, "instruments": instruments,
+            **self._breakout_fields(breakouts),
+            "market_status": "closed" if historical else self._market_status(),
         }
+        if historical:
+            result.pop("telegram_status")
+            if not self.sessions.get(day):
+                result.update(message="No prices available for this date.", history_note=self.history_note)
+        return result
 
     def snapshot(self, session_date=None):
         with self.lock:
             self.advance_time()
-            if session_date is None or session_date == self.date:
-                return self._snapshot()
-            instruments = self._instrument_snapshots(session_date)
-            primary = instruments[PRIMARY_SYMBOL]
-            candles = self.sessions.get(session_date, [])
-            five = self.sessions_5m.get(session_date, [])
-            breakouts = DualORBState()
-            breakouts.feed_closed([(15, c) for c in candles if c.is_closed]
-                                  + [(5, c) for c in five if c.is_closed])
-            strategy = breakouts.strategies["15"]
-            result = {
-                "date": session_date, "today": in_ist(self.now()).date().isoformat(),
-                "source": f"{SOURCE_NAMES[self.source_id]} · history", "source_id": self.source_id,
-                "source_generation": self.source_generation, "source_epoch": self.source_epoch,
-                "feed_status": self.feed_status,
-                "feed_error": self.feed_error, **primary,
-                "primary_symbol": PRIMARY_SYMBOL, "instruments": instruments,
-                "orb_high": strategy.orb_high, "orb_low": strategy.orb_low,
-                "range_locked": strategy.range_locked, "setups": breakouts.get_setups(),
-                "signals": [s.to_dict() for s in breakouts.signals],
-                "market_status": "closed",
-            }
-            if not candles:
-                result.update(message="No prices available for this date.", history_note=self.history_note)
-            return result
+            return self._snapshot(session_date)
 
     def history(self):
         with self.lock:
@@ -363,34 +293,21 @@ class MonitorHub:
         now = in_ist(self.now())
         day = session_date or self.date
         comparison = symbol != PRIMARY_SYMBOL
-        breakout_key = (self.source_generation, symbol, day)
-        needs_breakout = comparison and (include_history or breakout_key not in self._comparison_breakouts)
-        fallback = self._fallback_instruments.get(symbol) if self.source_id == "shoonya" else None
+        cache = self._comparison_breakouts.setdefault(symbol, {}) if comparison else {}
+        needs_breakout = comparison and (include_history or day not in cache)
         result = state.snapshot(now, self.feed_status, day,
-                                include_history=include_history or fallback is not None or needs_breakout)
-        result.update(history_source_id=self.source_id, history_fallback=False,
-                      history_delay_seconds=int(state.quote_delay.total_seconds()),
-                      quote_source_id=self.source_id)
-        if fallback is not None:
-            result = merge_fallback_history(result,
-                fallback.snapshot(now, self.feed_status, day),
-                now=now, feed_status=self.feed_status)
+                                include_history=include_history or needs_breakout)
         if comparison:
             if needs_breakout:
-                self._comparison_breakouts[breakout_key] = close_only_breakout(result.get("candles_5m", []), day)
-            result["breakout"] = dict(self._comparison_breakouts[breakout_key])
+                cache[day] = close_only_breakout(result.get("candles_5m", []), day)
+            result["breakout"] = dict(cache[day])
         if not include_history:
             result.pop("candles", None)
             result.pop("candles_5m", None)
         return result
 
     def _invalidate_comparison_breakout(self, symbol):
-        for key in list(self._comparison_breakouts):
-            if key[1] == symbol:
-                del self._comparison_breakouts[key]
-
-    def _instrument_snapshots(self, session_date=None):
-        return {symbol: self._instrument_snapshot(symbol, session_date) for symbol in self.instruments}
+        self._comparison_breakouts.pop(symbol, None)
 
     def _instrument_event(self, symbol, *, include_history=True):
         return {"symbol": symbol, "instruments": {
@@ -405,8 +322,13 @@ class MonitorHub:
             if active:
                 strategy.on_tick(Tick(SYMBOL, active.close, active.start_time), active)
 
-    def seed_historical_candles(self, candles, interval_minutes=15, *, symbol=PRIMARY_SYMBOL, live=False):
-        """Initialize bars; a live connection may recover a just-confirmed alert."""
+    def seed_historical_candles(self, candles, interval_minutes=15, *, symbol=PRIMARY_SYMBOL,
+                                live=False, publish=False):
+        """Restore bars and setups, recover eligible live alerts, then publish.
+
+        Only primary history can recover an alert. Publication sends a complete
+        initial view for the primary instrument or the changed comparison alone.
+        """
         with self.lock:
             self.advance_time()
             self.instruments[symbol].seed_historical_candles(candles, interval_minutes)
@@ -415,27 +337,31 @@ class MonitorHub:
                 self._rebuild_strategy()
                 if live:
                     self._notify_signals(self.signals)
+            if publish:
+                event = ({"type": "init", **self.snapshot()} if symbol == PRIMARY_SYMBOL else
+                         {"type": "state", **self._instrument_event(symbol)})
+                self.broadcast(event)
 
-    def seed_fallback_history(self, candles, *, symbol, history_source_id="yahoo"):
+    def seed_fallback_history(self, candles, *, symbol, history_source_id="yahoo", publish=False):
         """Backfill a comparison view while preserving the selected live feed."""
         with self.lock:
             self.advance_time()
-            fallback = self._fallback_instruments.get(symbol)
-            if (self.source_id != "shoonya" or fallback is None
-                    or history_source_id != "yahoo"):
+            state = self.instruments.get(symbol)
+            if state is None:
                 return False
-            clock = fallback.market_time()
-            completed = [candle for candle in candles if candle.is_closed and candle.end_time <= clock]
-            fallback.seed_historical_candles(completed, interval_minutes=5)
+            seeded = state.seed_fallback_history(candles, history_source_id=history_source_id)
             self._invalidate_comparison_breakout(symbol)
-            return bool(completed)
+            if seeded and publish:
+                self.broadcast({"type": "state", **self._instrument_event(symbol)})
+            return seeded
 
-    def _breakout_fields(self):
-        return {"orb_high": self.strategy.orb_high, "orb_low": self.strategy.orb_low,
-                "range_locked": self.strategy.range_locked,
-                "setups": self.breakouts.get_setups(),
+    def _breakout_fields(self, breakouts=None):
+        breakouts = breakouts or self.breakouts
+        strategy = breakouts.strategies["15"]
+        return {"orb_high": strategy.orb_high, "orb_low": strategy.orb_low,
+                "range_locked": strategy.range_locked, "setups": breakouts.get_setups(),
                 "telegram_status": getattr(self.notifier, "status", None),
-                "signals": [signal.to_dict() for signal in self.signals]}
+                "signals": [signal.to_dict() for signal in breakouts.signals]}
 
     def _notify_signals(self, signals):
         if self.notifier is None:
@@ -451,6 +377,8 @@ class MonitorHub:
                 self._notification_keys.add(key)
 
     def _bars_closed(self, symbol, closed):
+        if not closed:
+            return
         if symbol != PRIMARY_SYMBOL:
             if any(interval == 5 for interval, _ in closed):
                 self._invalidate_comparison_breakout(symbol)
@@ -470,20 +398,24 @@ class MonitorHub:
         with self.lock:
             self.advance_time()
             state = self.instruments[symbol]
-            if not state.process_tick(price, vol, tick_time):
+            pending = state.begin_tick(price, vol, tick_time)
+            if pending is None:
                 return False
+            tick, closed = pending
+            # Close packets and alerts must still observe the previous quote.
+            self._bars_closed(symbol, closed)
+            state.apply_tick(tick)
             if session_open is not None:
                 state.set_session_open(session_open, state.last_tick_time)
             if self.feed_status == "waiting":
                 self.feed_status = "live"
             event = self._instrument_event(symbol, include_history=False)
             if symbol == PRIMARY_SYMBOL:
-                tick = Tick(symbol, price, state.last_tick_time, vol)
                 self.strategy.on_tick(tick, state.active_candle)
                 self.strategy_5m.on_tick(tick, state.active_candle_5m)
+                primary = event["instruments"][symbol]
                 event.update(type="tick", price=price,
-                    active_candle=state.active_candle.to_dict(),
-                    active_candle_5m=state.active_candle_5m.to_dict(),
+                    active_candle=primary["active_candle"], active_candle_5m=primary["active_candle_5m"],
                     **self._breakout_fields(), market_status=self._market_status(),
                     last_tick_time=state.last_tick_time.isoformat())
             else:
@@ -495,7 +427,7 @@ class MonitorHub:
 class MonitorHTTPHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, hub=None, **kwargs):
         self.hub = hub
-        super().__init__(*args, directory=str(ROOT / "static"), **kwargs)
+        super().__init__(*args, directory=str(PACKAGE_DIR / "static"), **kwargs)
 
     def log_message(self, *args):
         pass
@@ -539,7 +471,7 @@ class MonitorHTTPHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urlsplit(self.path)
         if url.path == "/api/shoonya/help":
-            from feeds import shoonya_login_url
+            from .feeds import shoonya_login_url
             self._json({"login_url": shoonya_login_url()})
         elif url.path == "/api/public-ip":
             # Explicit, read-only check from the monitor's host, not the browser.
@@ -599,10 +531,11 @@ def main():
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--source", choices=tuple(SOURCE_NAMES), default="yahoo", help="Initial live source (default: yahoo)")
     args = parser.parse_args()
-    from feeds import FeedManager
-    from notifications import TelegramNotifier
-    notifier = TelegramNotifier(cache_dir=ROOT / "data")
-    hub = MonitorHub(cache_dir=ROOT / "data", notifier=notifier)
+    from .feeds import FeedManager
+    from .notifications import TelegramNotifier
+    cache_dir = data_dir()
+    notifier = TelegramNotifier(cache_dir=cache_dir)
+    hub = MonitorHub(cache_dir=cache_dir, notifier=notifier)
     hub.feed_manager = FeedManager(hub)
     try:
         notifier.start()

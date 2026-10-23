@@ -1,29 +1,20 @@
-"""Expired session caches disappear without interrupting the live monitor."""
+"""Expired session files are pruned by session date without harming live state."""
 
 from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from orb import market
+from orb.market import INSTRUMENTS, InstrumentState, PRIMARY_SYMBOL
+from orb.orb_monitor import MonitorHub
+from orb.signals import Candle, IST
 
-import market
-from market import INSTRUMENTS, PRIMARY_SYMBOL, InstrumentState
-from orb_monitor import MonitorHub
-from signals import Candle, IST
-
-
-class Clock:
-    def __init__(self, value):
-        self.value = value
-
-    def __call__(self):
-        return self.value
+from orb.tests.support.clock import Clock
 
 
 def candle(day, interval=15, symbol=PRIMARY_SYMBOL):
@@ -83,7 +74,7 @@ class RetentionTests(unittest.TestCase):
 
     def test_scan_runs_at_startup_and_next_ist_day_only(self):
         self.clock.value = datetime(2026, 10, 12, 18, 29, tzinfo=timezone.utc)
-        with patch("orb_monitor.prune_session_files", wraps=market.prune_session_files) as prune:
+        with patch("orb.orb_monitor.prune_session_files", wraps=market.prune_session_files) as prune:
             hub = MonitorHub(now=self.clock, cache_dir=self.root)
             self.assertEqual(prune.call_count, 1)
             for _ in range(3):
@@ -162,7 +153,3 @@ class RetentionTests(unittest.TestCase):
         self.assertIn("retention test denied", errors.getvalue())
         self.assertEqual(hub.history()["dates"], ["2026-08-13"])
         self.assertNotIn(expired, hub.instruments[PRIMARY_SYMBOL]._saved_content)
-
-
-if __name__ == "__main__":
-    unittest.main()

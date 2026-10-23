@@ -1,121 +1,26 @@
-"""Comparison emphasis uses closed five-minute prices, never candle whiskers."""
+"""Comparison updates remain independent of primary strategies and alerts."""
 
 from dataclasses import replace
-from datetime import timedelta
-from pathlib import Path
 import queue
-import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from orb.comparison import close_only_breakout
+from orb.market import INSTRUMENTS, PRIMARY_SYMBOL
+from orb.orb_monitor import MonitorHub
 
-from comparison import close_only_breakout
-from market import PRIMARY_SYMBOL
-from orb_monitor import MonitorHub
-from test_features import Clock, at, bar
+from orb.tests.support.clock import Clock
+from orb.tests.support.market import at, bar
+from orb.tests.support.market import close_only_bars as bars
+
 
 BANK = "^NSEBANK"
-MID = "NIFTY_MID_SELECT.NS"
+
+
 FOCIT = "FOCIT.BO"
 
 
-def bars(closes=None, *, symbol=BANK, day="2026-10-05"):
-    closes = list(range(100, 109)) if closes is None else closes
-    return [replace(bar(slot, 5, day=day, price=close), symbol=symbol,
-                    high=max(1000, close), low=1, close=close)
-            for slot, close in enumerate(closes)]
-
-
-def evaluate(candles, day="2026-10-05"):
-    return close_only_breakout([candle.to_dict() for candle in candles], day)
-
-
-class CloseOnlyRangeTests(unittest.TestCase):
-    def test_nine_closes_lock_range_ignoring_open_high_and_low(self):
-        state = evaluate(bars())
-        self.assertEqual((state["basis"], state["range_minutes"], state["confirmation_minutes"]),
-                         ("close", 45, 5))
-        self.assertTrue(state["range_locked"])
-        self.assertEqual((state["range_high"], state["range_low"]), (108, 100))
-        self.assertIsNone(state["direction"])
-        self.assertIsNone(state["confirmed_at"])
-        self.assertIsNone(state["price"])
-
-    def test_first_confirmation_is_1005_and_forming_close_cannot_confirm(self):
-        candles = bars([*range(100, 109), 109])
-        candles[-1].is_closed = False
-        self.assertIsNone(evaluate(candles)["direction"])
-        candles[-1].is_closed = True
-        state = evaluate(candles)
-        self.assertEqual(state["direction"], "BULLISH")
-        self.assertEqual(state["confirmed_at"], at(10, 5).isoformat())
-        self.assertEqual(state["price"], 109)
-
-    def test_missing_unclosed_incomplete_or_invalid_opening_child_never_locks(self):
-        for kind in ("missing", "is_closed", "is_complete", "close_is_valid", "nan", "zero"):
-            with self.subTest(kind=kind):
-                candles = bars([*range(100, 109), 120])
-                if kind == "missing":
-                    candles.pop(4)
-                elif kind in ("nan", "zero"):
-                    candles[4].close = float("nan") if kind == "nan" else 0
-                else:
-                    setattr(candles[4], kind, False)
-                state = evaluate(candles)
-                self.assertFalse(state["range_locked"])
-                self.assertIsNone(state["range_high"])
-                self.assertIsNone(state["range_low"])
-                self.assertIsNone(state["direction"])
-
-    def test_strict_boundaries_inside_close_clears_and_outside_requalifies(self):
-        expected = [(109, "BULLISH"), (108, None), (104, None),
-                    (100, None), (99, "BEARISH"), (107, None), (110, "BULLISH")]
-        closes = list(range(100, 109))
-        for close, direction in expected:
-            closes.append(close)
-            with self.subTest(close=close, count=len(closes)):
-                state = evaluate(bars(closes))
-                self.assertEqual(state["direction"], direction)
-                self.assertEqual(state["price"], close)
-                self.assertEqual(state["confirmed_at"],
-                                 (at() + timedelta(minutes=5 * len(closes))).isoformat())
-
-    def test_latest_invalid_close_clears_previous_qualification(self):
-        for field in ("is_complete", "close_is_valid"):
-            with self.subTest(field=field):
-                candles = bars([*range(100, 109), 120, 121])
-                setattr(candles[-1], field, False)
-                state = evaluate(candles)
-                self.assertTrue(state["range_locked"])
-                self.assertIsNone(state["direction"])
-                self.assertIsNone(state["confirmed_at"])
-                self.assertIsNone(state["price"])
-
-    def test_postrange_gap_is_not_fabricated_and_later_real_close_can_qualify(self):
-        candles = bars([*range(100, 109), 120, 105, 99])
-        candles.pop(10)
-        state = evaluate(list(reversed(candles)))
-        self.assertEqual(state["direction"], "BEARISH")
-        self.assertEqual(state["confirmed_at"], at(10, 15).isoformat())
-
-    def test_wrong_date_interval_or_unaligned_opening_bar_cannot_fill_a_slot(self):
-        for kind in ("date", "interval", "alignment"):
-            with self.subTest(kind=kind):
-                candles = bars([*range(100, 109), 120])
-                if kind == "date":
-                    candles[4] = bars(day="2026-10-02")[4]
-                elif kind == "interval":
-                    candles[4].end_time += timedelta(minutes=10)
-                else:
-                    candles[4].start_time += timedelta(seconds=1)
-                    candles[4].end_time += timedelta(seconds=1)
-                self.assertFalse(evaluate(candles)["range_locked"])
-
-    def test_single_price_range_still_uses_strict_comparisons(self):
-        self.assertIsNone(evaluate(bars([100] * 10))["direction"])
-        self.assertEqual(evaluate(bars([100] * 9 + [101]))["direction"], "BULLISH")
-        self.assertEqual(evaluate(bars([100] * 9 + [99]))["direction"], "BEARISH")
+MID = "NIFTY_MID_SELECT.NS"
 
 
 class ComparisonHubTests(unittest.TestCase):
@@ -150,7 +55,7 @@ class ComparisonHubTests(unittest.TestCase):
     def test_tick_deltas_reuse_confirmation_without_serializing_closed_history(self):
         self.clock.value = at(10, 5)
         self.seed([*range(100, 109), 110])
-        with patch("orb_monitor.close_only_breakout", wraps=close_only_breakout) as evaluator:
+        with patch("orb.orb_monitor.close_only_breakout", wraps=close_only_breakout) as evaluator:
             first = self.hub._instrument_snapshot(BANK, include_history=False)
             self.assertEqual(evaluator.call_count, 1)
             self.assertEqual(first["breakout"]["direction"], "BULLISH")
@@ -256,5 +161,46 @@ class ComparisonHubTests(unittest.TestCase):
         self.assertEqual(self.comparison(day="2026-10-05")["breakout"]["direction"], "BULLISH")
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ComparatorWiringTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(at(10, 0))
+        self.hub = MonitorHub(now=self.clock)
+
+    def test_comparator_history_does_not_rebuild_primary_strategies(self):
+        self.clock.value = at(10, 15)
+        self.hub.seed_historical_candles([bar(slot, 5) for slot in range(9)], 5)
+        before = self.hub.snapshot()
+        for symbol in INSTRUMENTS:
+            if symbol == PRIMARY_SYMBOL:
+                continue
+            candles = [replace(bar(slot, 5, price=500 + slot * 10), symbol=symbol) for slot in range(9)]
+            self.hub.seed_historical_candles(candles, 5, symbol=symbol)
+            after = self.hub.snapshot()
+            for key in ("candles", "candles_5m", "setups", "signals", "orb_high", "orb_low"):
+                self.assertEqual(before[key], after[key])
+            self.assertEqual(len(after["instruments"][symbol]["candles"]), 3)
+            self.assertEqual(len(after["instruments"][symbol]["candles_5m"]), 9)
+            self.assertNotIn("setups", after["instruments"][symbol])
+
+    def test_incremental_events_cannot_replace_primary_state_with_comparator(self):
+        client = queue.Queue()
+        self.hub.register_client(client)
+        self.assertEqual(set(client.get_nowait()["instruments"]), set(INSTRUMENTS))
+        self.hub.process_tick(100)
+        primary = client.get_nowait()
+        self.assertEqual(primary["type"], "tick")
+        self.assertEqual(set(primary["instruments"]), {PRIMARY_SYMBOL})
+        self.hub.process_tick(500, symbol=BANK)
+        comparator = client.get_nowait()
+        self.assertEqual(set(comparator) - {"date", "today", "source_id", "source_generation", "source_epoch"},
+                         {"type", "symbol", "instruments"})
+        self.assertEqual((comparator["type"], comparator["symbol"]), ("state", BANK))
+        self.assertEqual(set(comparator["instruments"]), {BANK})
+        self.clock.value = at(10, 5)
+        self.hub.advance_time()
+        events = list(client.queue)
+        close = next(event for event in events if event["type"] == "candle_close")
+        self.assertEqual(set(close["instruments"]), {PRIMARY_SYMBOL})
+        self.assertTrue(any(event["type"] == "state" and event["symbol"] == BANK for event in events))
+        self.hub.set_feed_status("disconnected")
+        self.assertEqual(set(client.queue[-1]["instruments"]), set(INSTRUMENTS))

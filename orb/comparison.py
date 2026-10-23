@@ -3,7 +3,7 @@
 from datetime import date, datetime, time, timedelta
 import math
 
-from signals import IST
+from .signals import IST, in_ist
 
 
 def close_only_breakout(candles, session_date):
@@ -30,8 +30,8 @@ def close_only_breakout(candles, session_date):
             end = datetime.fromisoformat(candle["end_time"])
             # Snapshots contain IST timestamps. Normalize other aware offsets
             # while allowing old cache timestamps that omitted their timezone.
-            start = start.replace(tzinfo=IST) if start.tzinfo is None else start.astimezone(IST)
-            end = end.replace(tzinfo=IST) if end.tzinfo is None else end.astimezone(IST)
+            start = in_ist(start)
+            end = in_ist(end)
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
         if (not candle.get("is_closed") or end - start != interval
@@ -50,10 +50,10 @@ def close_only_breakout(candles, session_date):
     closes = [slots[start][1] for start in expected]
     high, low = max(closes), min(closes)
     result.update(range_locked=True, range_high=high, range_low=low)
-    confirmations = [start for start in slots if start >= range_end]
-    if not confirmations:
+    latest = max(slots)
+    if latest < range_end:
         return result
-    end, close, valid = slots[max(confirmations)]
+    end, close, valid = slots[latest]
     if valid:
         result.update(direction="BULLISH" if close > high else "BEARISH" if close < low else None,
                       confirmed_at=end.isoformat(), price=close)

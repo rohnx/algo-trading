@@ -1,26 +1,16 @@
 const $ = id => document.getElementById(id);
 const canvas = $('chart');
 const ctx = canvas.getContext('2d');
-const dateFormat = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-const dateLabels = new Map(), timeLabels = new Map();
-function formattedTime(format, cache, time) {
-  if (typeof time !== 'string') return format.format(new Date(time));
-  if (!cache.has(time)) {
-    if (cache.size >= 4096) cache.clear();
-    cache.set(time, format.format(new Date(time)));
-  }
-  return cache.get(time);
-}
-const sessionDate = (time = new Date()) => formattedTime(dateFormat, dateLabels, time);
-const timeLabel = time => formattedTime(timeFormat, timeLabels, time);
+// NSE sessions use fixed UTC+05:30, independent of the browser's locale and zone.
+const istTimestamp = time => new Date(new Date(time).getTime() + 330 * 60000).toISOString();
+const sessionDate = (time = new Date()) => istTimestamp(time).slice(0, 10);
+const timeLabel = time => istTimestamp(time).slice(11, 16);
 const number = value => Number.isFinite(value) ? value.toFixed(2) : '—';
 const percent = value => Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : '—';
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const chartMotion = new ChartMotion();
 const candleLists = new WeakMap();
 const candleClocks = new WeakMap();
-let chartSize = null;
 let tipContext = null;
 const comparisonTips = new Map();
 const seriesLabels = new Map();
@@ -65,6 +55,13 @@ const sectorSymbols = new Set(['^CNXPHARMA', '^CNXAUTO', '^CNXFMCG', '^CNXMETAL'
 const comparisonGroups = { derivatives: { id: 'comparison-toggle', label: 'Derivatives' },
   sectors: { id: 'sectors-tab', label: 'NIFTY Sectors' } };
 
+async function fetchJSON(url, fallback, options) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || data.message || (typeof fallback === 'function' ? fallback(response.status) : fallback));
+  return data;
+}
+
 function readPalette() {
   const style = getComputedStyle(document.documentElement);
   palette = Object.fromEntries(['up', 'down', 'wick', 'grid', 'chart-label', 'orb-line', 'orb-label', 'orb-fill', 'orb-opening', 'marker', 'price-line', 'price-fill', 'price-ink', 'crosshair', 'crosshair-fill', 'crosshair-ink', ...comparisonPalette].map(key => [key, style.getPropertyValue(`--${key}`).trim()]));
@@ -99,9 +96,7 @@ function syncNavigation() {
 async function loadDates() {
   const source = selectedSource;
   try {
-    const response = await fetch('/api/history');
-    if (!response.ok) throw new Error('History unavailable');
-    const data = await response.json();
+    const data = await fetchJSON('/api/history', 'History unavailable');
     if (source !== selectedSource || data.source_id && data.source_id !== selectedSource) return;
     historyNote = data.history_note || '';
     dates = [...new Set([...(data.dates || []), today, ...(live ? [live.date] : [])])].sort();
@@ -135,9 +130,7 @@ async function selectDate(date, follow = false) {
   scheduleRender();
   requestController = new AbortController();
   try {
-    const response = await fetch(`/api/session?date=${date}`, { signal: requestController.signal });
-    if (!response.ok) throw new Error(`Session unavailable (${response.status})`);
-    const data = await response.json();
+    const data = await fetchJSON(`/api/session?date=${date}`, status => `Session unavailable (${status})`, { signal: requestController.signal });
     if (id !== requestId || data.source_id && data.source_id !== selectedSource) return;
     view = live?.date === date ? live : data;
   } catch (error) {
@@ -153,27 +146,20 @@ async function selectDate(date, follow = false) {
 
 async function switchSource(source) {
   if (!['yahoo', 'shoonya'].includes(source) || switchingSource) return;
-  stopReplay();
-  chartMotion.reset();
-  transition = null;
   const previousSource = selectedSource, previousLive = live, previousView = view;
   const pending = { source, previousSource, generation: sourceGeneration, epoch: sourceEpoch, confirmed: false };
+  resetSession();
+  chartMotion.reset();
   pendingSourceSwitch = pending;
   selectedSource = source;
   switchingSource = true;
   sourceError = '';
   pointer = null;
-  ++requestId;
-  requestController?.abort();
-  view = null;
-  live = null;
   loading = true;
   scheduleRender();
   try {
-    const response = await fetch('/api/source', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source }) });
-    const data = await response.json();
+    const data = await fetchJSON('/api/source', status => `Source switch failed (${status})`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source }) });
     if (pendingSourceSwitch !== pending) return;
-    if (!response.ok) throw new Error(data.error || data.message || `Source switch failed (${response.status})`);
     // The stream may already have delivered newer quotes than the POST snapshot.
     const keepLive = pending.confirmed && live?.source_id === source
       && (live.source_epoch !== data.source_epoch || (live.source_generation ?? -1) >= (data.source_generation ?? -1));
@@ -224,9 +210,7 @@ async function loadShoonyaHelp() {
   client.textContent = '';
   note.textContent = 'Loading authorization link…';
   try {
-    const response = await fetch('/api/shoonya/help');
-    if (!response.ok) throw new Error('Help unavailable');
-    const data = await response.json();
+    const data = await fetchJSON('/api/shoonya/help', 'Help unavailable');
     if (id !== shoonyaHelpRequest) return;
     const url = data.login_url && new URL(data.login_url);
     if (url && url.protocol === 'https:' && url.hostname === 'api.shoonya.com' && !url.port
@@ -248,9 +232,7 @@ async function checkPublicIp() {
   button.disabled = true;
   output.textContent = 'Checking public IP…';
   try {
-    const response = await fetch('/api/public-ip');
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Public IP lookup unavailable. Try curl -s ifconfig.me.');
+    const data = await fetchJSON('/api/public-ip', 'Public IP lookup unavailable. Try curl -s ifconfig.me.');
     if (typeof data.ip !== 'string' || !data.ip.trim()) throw new Error('No public IP returned. Try curl -s ifconfig.me.');
     output.textContent = `Public IP: ${data.ip.trim()} — confirm it matches Shoonya’s API IP setting.`;
   } catch (error) {
@@ -271,7 +253,7 @@ function getCandles(data = displayView(), interval = selectedInterval) {
   if (cached && cached.closed === closed && cached.active === active && cached.date === selectedDate) return cached.list;
   const all = [...(closed || []), ...(active ? [active] : [])];
   const list = [...new Map(all.filter(c => sessionDate(c.start_time) === selectedDate && [c.open, c.high, c.low, c.close].every(Number.isFinite)).map(c => [c.start_time, c])).values()]
-    .sort((a, b) => a.start_time.localeCompare(b.start_time));
+    .sort((a, b) => candleClock(a).start - candleClock(b).start);
   candleLists.set(data, { ...candleLists.get(data), [interval]: { closed, active, date: selectedDate, list } });
   return list;
 }
@@ -296,7 +278,7 @@ const comparisonQuoteDelay = instrument => Number.isFinite(instrument?.quote_del
 const comparisonDelayLabel = instrument => comparisonQuoteDelay(instrument) ? `${Number((comparisonQuoteDelay(instrument) / 60).toFixed(1))}m delayed` : 'delayed';
 
 function comparisonProvenance(instrument, data) {
-  if (!instrument.history_fallback || !instrument.history_source_id) return { label: '', title: '' };
+  if (!instrument.history_fallback || !instrument.history_source_id) return '';
   const name = source => source === 'yahoo' ? 'Yahoo' : sourceName(source);
   const historySource = name(instrument.history_source_id);
   const historyDelay = Number.isFinite(instrument.history_delay_seconds) && instrument.history_delay_seconds > 0
@@ -304,7 +286,7 @@ function comparisonProvenance(instrument, data) {
   const quoteSource = instrument.quote_source_id && name(instrument.quote_source_id);
   const price = data?.replay_time != null ? `Replay price: ${historySource}`
     : quoteSource ? `${instrument.quote_source_id === 'shoonya' ? 'Live quotes' : instrument.comparison_status === 'closed' ? 'After-hours price' : 'Price'}: ${quoteSource}` : '';
-  return { label: ` · ${historySource} history`, title: ` · History: ${historySource}${historyDelay}${price ? ` · ${price}` : ''}` };
+  return ` · History: ${historySource}${historyDelay}${price ? ` · ${price}` : ''}`;
 }
 
 function comparisonQuoteFresh(instrument) {
@@ -312,6 +294,8 @@ function comparisonQuoteFresh(instrument) {
   const age = now - timestamp - comparisonQuoteDelay(instrument) * 1000;
   return connected && Number.isFinite(timestamp) && age >= 0 && age <= 90000;
 }
+
+const completeCandle = candle => candle.is_complete !== false && candle.close_is_valid !== false;
 
 function comparisonCloseValid(candle) {
   // A late start can leave OHLC incomplete while its observed close is valid.
@@ -328,7 +312,7 @@ function comparisonCandles(instrument) {
   // Keep the normal 15m sampling wherever the parent is usable; finer samples
   // still carry their own validity and coverage, so real gaps stay disconnected.
   return selected.flatMap(parent => {
-    if (parent.is_complete !== false && parent.close_is_valid !== false) return [parent];
+    if (completeCandle(parent)) return [parent];
     const { start, end } = candleClock(parent);
     const children = five.filter(child => candleClock(child).start >= start && candleClock(child).end <= end);
     return children.length ? children : [parent];
@@ -411,20 +395,21 @@ function replayBreakout(instrument, cutoff) {
   const start = Date.parse(`${selectedDate}T09:15:00+05:30`), end = start + 45 * 60000;
   const closed = getCandles(instrument, 5).filter(c => c.is_closed && candleClock(c).end <= cutoff
     && candleClock(c).start >= start && candleClock(c).end <= start + 375 * 60000
-    && candleClock(c).end - candleClock(c).start === 300000 && (candleClock(c).start - start) % 300000 === 0)
-    .sort((a, b) => candleClock(a).start - candleClock(b).start);
-  const valid = candle => candle.is_complete !== false && candle.close_is_valid !== false && Number.isFinite(candle.close) && candle.close > 0;
-  const opening = closed.filter(c => candleClock(c).start >= start && candleClock(c).start < end);
-  const locked = cutoff >= end && opening.length === 9 && opening.every((c, i) => valid(c) && candleClock(c).start === start + i * 300000 && candleClock(c).end === start + (i + 1) * 300000);
+    && candleClock(c).end - candleClock(c).start === 300000 && (candleClock(c).start - start) % 300000 === 0);
+  const valid = candle => completeCandle(candle) && Number.isFinite(candle.close) && candle.close > 0;
+  const opening = closed.filter(c => candleClock(c).start < end);
+  const locked = cutoff >= end && opening.length === 9
+    && opening.every((c, index) => valid(c) && candleClock(c).start === start + index * 300000);
   const state = { basis: 'close', range_minutes: 45, confirmation_minutes: 5, range_locked: locked,
     range_high: locked ? Math.max(...opening.map(c => c.close)) : null,
     range_low: locked ? Math.min(...opening.map(c => c.close)) : null,
     direction: null, confirmed_at: null, price: null };
   if (!locked) return state;
-  for (const candle of closed.filter(c => candleClock(c).start >= end)) {
-    state.direction = valid(candle) ? candle.close > state.range_high ? 'BULLISH' : candle.close < state.range_low ? 'BEARISH' : null : null;
-    state.confirmed_at = valid(candle) ? candle.end_time : null;
-    state.price = valid(candle) ? candle.close : null;
+  const latest = closed.at(-1);
+  if (candleClock(latest).start >= end && valid(latest)) {
+    state.direction = latest.close > state.range_high ? 'BULLISH' : latest.close < state.range_low ? 'BEARISH' : null;
+    state.confirmed_at = latest.end_time;
+    state.price = latest.close;
   }
   return state;
 }
@@ -456,8 +441,8 @@ function comparisonSeries(data) {
       if (points[0].barStart === opening) points[0].gap = false;
       points.unshift({ time: opening, quoteTime: opening, price: reference, gap: true, sessionOpen: true });
     }
-    return { instrument, index, origin, reference, referenceTime: opening,
-      points: points.map(point => ({ ...point, normalized: origin * point.price / reference })) };
+    for (const point of points) point.normalized = origin * point.price / reference;
+    return { instrument, index, origin, reference, referenceTime: opening, points };
   });
 }
 
@@ -569,7 +554,7 @@ function drawSeriesLabels(data, series, geometry, emphasis, shownPrice) {
         : `last recorded ${breakout.direction.toLowerCase()} close ${timeLabel(breakout.confirmed_at)} · ${status === 'stale' || status === 'unavailable' ? 'current confirmation unavailable' : 'no current 5m confirmation'}`
       : breakout?.range_locked ? Number.isFinite(breakout.price) ? 'latest close within range' : 'awaiting a valid 5m close'
       : 'opening range incomplete';
-    entry.title = `${instrument.label} · ${percent(change)} since 09:15 open · ${status}${Number.isFinite(timestamp) ? ` · as of ${timeLabel(timestamp)}` : ''}${delayed ? ` · ${comparisonDelayLabel(instrument)}` : ''}${provenance.title}${!isPrimary ? ` · 5m close outside the first 45m closing range · ${confirmation}` : ''}`;
+    entry.title = `${instrument.label} · ${percent(change)} since 09:15 open · ${status}${Number.isFinite(timestamp) ? ` · as of ${timeLabel(timestamp)}` : ''}${delayed ? ` · ${comparisonDelayLabel(instrument)}` : ''}${provenance}${!isPrimary ? ` · 5m close outside the first 45m closing range · ${confirmation}` : ''}`;
     if (!isPrimary && breakout?.range_locked) entry.title += ` · Closing range ${number(breakout.range_low)}–${number(breakout.range_high)} · Last confirmed close ${number(breakout.price)}`;
     if (direction) entry.title += entry.emphasis === 'muted' ? ' · Another index is isolated' : ' · Hover or focus to isolate';
     if (isPrimary) entry.title += ' · Hover or focus to reveal comparisons';
@@ -668,6 +653,7 @@ function setupFor(data, interval = selectedInterval) {
 
 const rangeEndLabel = setup => setup.range_minutes === 30 ? '09:45' : '10:00';
 const easeTransition = fraction => fraction < .5 ? 4 * fraction ** 3 : 1 - (-2 * fraction + 2) ** 3 / 2;
+const interpolate = (from, to, fraction) => Object.fromEntries(Object.keys(from).map(key => [key, from[key] + (to[key] - from[key]) * fraction]));
 function rangeShape(data, interval, now = performance.now()) {
   const setup = setupFor(data, interval);
   const target = { high: setup.orb_high, low: setup.orb_low, endMinute: 555 + setup.range_minutes };
@@ -675,7 +661,7 @@ function rangeShape(data, interval, now = performance.now()) {
   const from = transition.rangeFrom;
   const progress = easeTransition(Math.max(0, Math.min(1, (now - transition.started) / transition.duration)));
   if (![from.high, from.low, target.high, target.low].every(Number.isFinite)) return target;
-  return Object.fromEntries(Object.keys(target).map(key => [key, from[key] + (target[key] - from[key]) * progress]));
+  return interpolate(from, target, progress);
 }
 
 function setIntervalMinutes(minutes) {
@@ -708,8 +694,7 @@ function partialCandle(candle, time, capturedAt) {
 
 function replayView(time) {
   const snapshot = replay.snapshot;
-  const originalFive = replay.five;
-  const five = originalFive.map(c => partialCandle(c, time, replay.end)).filter(Boolean);
+  const five = replay.five.map(c => partialCandle(c, time, replay.end)).filter(Boolean);
   const fiveByStart = new Map(five.map(c => [c.start_time, c]));
   const fifteen = replay.fifteen.map(candle => {
     const { start, end } = candleClock(candle);
@@ -727,7 +712,7 @@ function replayView(time) {
     const closed = getCandles(instrument, 5).filter(c => c.is_closed && candleClock(c).end <= time);
     const closedFifteen = getCandles(instrument, 15).filter(c => c.is_closed && candleClock(c).end <= time);
     const samples = closed.length ? closed : closedFifteen;
-    const last = samples.findLast(c => c.is_complete !== false && c.close_is_valid !== false);
+    const last = samples.findLast(completeCandle);
     const fresh = last && last === samples.at(-1) && time - candleClock(last).end <= (closed.length ? 5 : 15) * 60000;
     return [symbol, { ...instrument, candles: closedFifteen, candles_5m: closed, active_candle: null, active_candle_5m: null,
       current_price: last?.close ?? instrument.session_open, last_tick_time: last?.end_time ?? null,
@@ -741,10 +726,11 @@ function replayView(time) {
     const openingStart = Date.parse(`${selectedDate}T09:15:00+05:30`);
     const openingEnd = openingStart + setup.range_minutes * 60000;
     const opening = (interval === 5 ? five : fifteen).filter(c => Date.parse(c.start_time) >= openingStart && Date.parse(c.start_time) < openingEnd);
-    const validOpening = opening.filter(c => c.is_complete !== false && c.close_is_valid !== false);
+    const validOpening = opening.filter(completeCandle);
     const expected = setup.range_minutes / interval;
     const rangeLocked = Boolean(setup.range_locked && time >= openingEnd && validOpening.length === expected && validOpening.every((c, index) => c.is_closed && Date.parse(c.start_time) === openingStart + index * interval * 60000));
     const visibleSignals = rangeLocked ? (setup.signals || []).filter(s => Date.parse(s.timestamp) <= time) : [];
+    const confirmed = Date.parse(setup.confirmed_at) <= time;
     setups[String(interval)] = {
       ...setup,
       orb_high: validOpening.length ? Math.max(...validOpening.map(c => c.high)) : null,
@@ -752,9 +738,9 @@ function replayView(time) {
       range_locked: rangeLocked,
       signals: visibleSignals,
       // The final snapshot's agreement state must not appear before its time.
-      confirmation_direction: Date.parse(setup.confirmed_at) <= time ? setup.confirmation_direction : null,
-      confirmed_at: Date.parse(setup.confirmed_at) <= time ? setup.confirmed_at : null,
-      confirmation_price: Date.parse(setup.confirmed_at) <= time ? setup.confirmation_price : null
+      confirmation_direction: confirmed ? setup.confirmation_direction : null,
+      confirmed_at: confirmed ? setup.confirmed_at : null,
+      confirmation_price: confirmed ? setup.confirmation_price : null
     };
   }
   return {
@@ -808,13 +794,23 @@ function primaryDataGaps(data) {
   // future part of a live session or a replay as missing data.
   for (let time = start; time < end && time < start + 375 * 60000; time += interval * 60000) {
     const candle = byStart.get(time);
-    if (candle && candle.is_complete !== false && candle.close_is_valid !== false) continue;
+    if (candle && completeCandle(candle)) continue;
     count++;
     const previous = ranges.at(-1);
     if (previous?.end === time) previous.end += interval * 60000;
     else ranges.push({ start: time, end: time + interval * 60000 });
   }
   return { ranges, count, interval };
+}
+
+function emptyStateText(data, missingFive) {
+  if (loading) return switchingSource ? 'Switching quote source…' : 'Loading session…';
+  if (loadError) return loadError;
+  if (data?.feed_status === 'connecting' && selectedDate === today) return `Connecting to ${sourceName(selectedSource)}… Loading candle history.`;
+  if (missingFive) return '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.';
+  if (data?.message) return `${data.message}\n${data.history_note || ''}`;
+  if (selectedDate === today && timeLabel(new Date()) < '09:15') return 'Market candles appear after 09:15 IST.';
+  return `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`;
 }
 
 function statusText(data = displayView()) {
@@ -848,7 +844,7 @@ function render(now = performance.now()) {
     replay.frame = replayView(replay.time);
   }
   const data = displayView();
-  renderComparison(data);
+  renderComparison();
   syncNavigation();
   $('price').textContent = number(data?.current_price);
   const status = statusText(data);
@@ -892,7 +888,12 @@ function render(now = performance.now()) {
 }
 
 function drawChart(now = performance.now(), data = displayView()) {
-  const width = chartSize?.width ?? canvas.clientWidth, height = chartSize?.height ?? canvas.clientHeight;
+  const width = canvas.clientWidth, height = canvas.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   if (width < 100 || height < 80) { clearSeriesLabels(); return; }
   const baseline = [primaryInstrument(data)?.session_open, ...comparisonInstruments(data).map(item => `${item.symbol}:${item.session_open}`)];
@@ -908,10 +909,7 @@ function drawChart(now = performance.now(), data = displayView()) {
   const empty = $('empty-state');
   empty.hidden = candles.length > 0;
   const missingFive = selectedInterval === 5 && !candles.length && getCandles(data, 15).length;
-  if (!candles.length) empty.textContent = loading ? switchingSource ? 'Switching quote source…' : 'Loading session…' : loadError || (data?.feed_status === 'connecting' && selectedDate === today
-    ? `Connecting to ${sourceName(selectedSource)}… Loading candle history.`
-    : missingFive ? '5-minute data is unavailable for this session.\nSelect 15m to view the saved candles.' : data?.message ? `${data.message}\n${data.history_note || ''}`
-    : selectedDate === today && timeLabel(new Date()) < '09:15' ? 'Market candles appear after 09:15 IST.' : `No candles for ${selectedDate}.\nChoose an earlier session or return when quotes arrive.`);
+  if (!candles.length) empty.textContent = emptyStateText(data, missingFive);
   ctx.font = '10px ui-monospace, monospace';
   ctx.fillStyle = palette['chart-label'];
   ctx.textAlign = 'center';
@@ -954,9 +952,11 @@ function drawChart(now = performance.now(), data = displayView()) {
   // Fit the blurred overview until NIFTY confirms, then exclude hidden neutral
   // indices. A later NIFTY hover temporarily fits all comparisons again.
   const shape = rangeShape(data, selectedInterval, now);
-  const series = comparisonSeries(data).map(item => {
-    const points = item.points.map(point => ({ ...point }));
+  const series = comparisonSeries(data);
+  for (const item of series) {
+    const { points } = item;
     const last = points.at(-1), previous = points.at(-2);
+    const targetTime = last?.time;
     const key = `comparison:${selectedInterval}:${item.instrument.symbol}:${item.referenceTime}:${item.reference}`;
     const previousTip = comparisonTips.get(key);
     const active = selectedInterval === 5 ? item.instrument.active_candle_5m : item.instrument.active_candle;
@@ -970,9 +970,8 @@ function drawChart(now = performance.now(), data = displayView()) {
         last.time = Math.max(previous.time, chartMotion.value(`${key}:time`, last.time, previous.time));
       }
     }
-    comparisonTips.set(key, item.points.at(-1)?.time);
-    return { ...item, points };
-  });
+    comparisonTips.set(key, targetTime);
+  }
   const emphasisState = comparisonEmphasisState(data, series);
   const fittedSeries = series.filter(item => item.points.length && (emphasisState.overview || emphasisState.reveal || emphasisState.qualifying.has(item.instrument.symbol)));
   for (const { points } of fittedSeries) prices.push(...points.map(point => point.normalized));
@@ -1027,7 +1026,6 @@ function drawChart(now = performance.now(), data = displayView()) {
     const fifteenWidth = Math.min(26, dayWidth / 25 * .55);
     return { center: xMinute(minute + interval / 2), width: Math.max(1.5, fifteenWidth * interval / 15), open: candle.open, high: candle.high, low: candle.low, close: candle.close };
   }
-  const interpolate = (a, b, fraction) => Object.fromEntries(Object.keys(a).map(k => [k, a[k] + (b[k] - a[k]) * fraction]));
   const parentFor = (candle, list) => list.find(parent => Date.parse(parent.start_time) <= Date.parse(candle.start_time) && Date.parse(candle.start_time) < Date.parse(parent.end_time));
   function paintCandle(candle, shape, alpha = 1) {
     if (alpha <= 0) return;
@@ -1047,32 +1045,31 @@ function drawChart(now = performance.now(), data = displayView()) {
     ctx.globalAlpha = 1;
   }
   const drawnShapes = new Map();
-  if (transition) {
-    for (const candle of outgoing) {
-      const original = geometry(candle, transition.from);
-      const parent = transition.to === 15 ? parentFor(candle, candles) : null;
-      const destination = parent ? geometry(parent, 15) : { ...original, width: geometry(candle, transition.to).width };
-      const shape = interpolate(original, destination, progress);
-      drawnShapes.set(`${transition.from}:${candle.start_time}`, shape);
-      paintCandle(candle, shape, 1 - progress);
-    }
-  }
+  const passes = [[selectedInterval, candles, transition ? progress : 1]];
+  if (transition) passes.unshift([transition.from, outgoing, 1 - progress]);
   let hovered = null;
-  for (const candle of candles) {
-    const final = geometry(candle, selectedInterval);
-    let shape = final;
-    if (transition) {
-      const parent = transition.from === 15 ? parentFor(candle, outgoing) : null;
-      const children = transition.from === 5 ? outgoing.filter(c => Date.parse(c.start_time) >= Date.parse(candle.start_time) && Date.parse(c.start_time) < Date.parse(candle.end_time)) : [];
-      const origin = parent ? geometry(parent, 15) : children.length ? geometry(children[Math.floor(children.length / 2)], 5) : { ...final, width: geometry(candle, transition.from).width };
-      shape = interpolate(origin, final, progress);
+  for (const [interval, list, alpha] of passes) {
+    const incoming = interval === selectedInterval;
+    for (const candle of list) {
+      const final = geometry(candle, interval);
+      let shape = final;
+      if (transition) {
+        const otherInterval = incoming ? transition.from : transition.to;
+        const otherList = incoming ? outgoing : candles;
+        const parent = otherInterval === 15 ? parentFor(candle, otherList) : null;
+        const children = incoming && otherInterval === 5 ? otherList.filter(c => candleClock(c).start >= candleClock(candle).start && candleClock(c).start < candleClock(candle).end) : [];
+        const other = parent ? geometry(parent, 15) : children.length ? geometry(children[Math.floor(children.length / 2)], 5) : { ...final, width: geometry(candle, otherInterval).width };
+        shape = incoming ? interpolate(other, final, progress) : interpolate(final, other, progress);
+      }
+      drawnShapes.set(`${interval}:${candle.start_time}`, shape);
+      paintCandle(candle, shape, alpha);
+      if (incoming && pointer && Math.abs(pointer.x - final.center) <= dayWidth / (375 / selectedInterval) / 2) hovered = candle;
     }
-    drawnShapes.set(`${selectedInterval}:${candle.start_time}`, shape);
-    paintCandle(candle, shape, transition ? progress : 1);
-    if (pointer && Math.abs(pointer.x - final.center) <= dayWidth / (375 / selectedInterval) / 2) hovered = candle;
   }
-  function paintSignals(interval, list, alpha) {
-    if (alpha <= 0) return;
+  // Each view's arrows come from its own range and closing interval. The
+  // footer separately records signals confirmed by both setups together.
+  for (const [interval, list, alpha] of passes) {
+    if (alpha <= 0) continue;
     for (const signal of setupFor(data, interval).signals || []) {
       const confirmedAt = Date.parse(signal.timestamp);
       const candle = list.find(c => Date.parse(c.start_time) < confirmedAt && Date.parse(c.end_time) >= confirmedAt);
@@ -1088,10 +1085,6 @@ function drawChart(now = performance.now(), data = displayView()) {
       ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
     }
   }
-  // Each view's arrows come from its own range and closing interval. The
-  // footer separately records signals confirmed by both setups together.
-  if (transition) paintSignals(transition.from, outgoing, 1 - progress);
-  paintSignals(selectedInterval, candles, transition ? progress : 1);
   if (Number.isFinite(data?.current_price)) {
     const priceY = y(shownPrice);
     line(left, priceY, right, priceY, palette['price-line'], [2, 4]);
@@ -1141,6 +1134,14 @@ function drawChart(now = performance.now(), data = displayView()) {
   chartMotion.end();
 }
 
+function resetSession() {
+  stopReplay();
+  transition = null;
+  live = view = null;
+  ++requestId;
+  requestController?.abort();
+}
+
 function handleEvent(message) {
   if (!message.date) return;
   const fullSnapshot = ['init', 'session', 'status'].includes(message.type);
@@ -1151,12 +1152,7 @@ function handleEvent(message) {
     sourceEpoch = message.source_epoch;
     sourceGeneration = -1;
     if (restarted) {
-      stopReplay();
-      transition = null;
-      live = null;
-      view = null;
-      ++requestId;
-      requestController?.abort();
+      resetSession();
       refreshDates = true;
     }
   }
@@ -1164,14 +1160,9 @@ function handleEvent(message) {
   if (message.source_generation != null && message.source_generation < sourceGeneration) return;
   if (message.source_id && message.source_id !== selectedSource) {
     if (switchingSource || !fullSnapshot) return;
-    stopReplay();
-    transition = null;
+    resetSession();
     selectedSource = message.source_id;
-    live = null;
-    view = null;
     sourceError = '';
-    ++requestId;
-    requestController?.abort();
     refreshDates = true;
   }
   sourceGeneration = Math.max(sourceGeneration, message.source_generation ?? -1);
@@ -1287,14 +1278,10 @@ $('chart-wrap').addEventListener('pointerleave', () => {
   scheduleRender();
 });
 new ResizeObserver(() => {
-  const dpr = window.devicePixelRatio || 1;
   chartHover = { primary: false, comparison: null };
   chartHitTest = null;
   chartHoverAnchor = null;
-  chartSize = { width: canvas.clientWidth, height: canvas.clientHeight };
-  canvas.width = Math.round(chartSize.width * dpr);
-  canvas.height = Math.round(chartSize.height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); scheduleRender();
+  scheduleRender();
 }).observe($('chart-wrap'));
 const stream = new EventSource('/api/stream');
 stream.onopen = () => { connected = true; scheduleRender(); };

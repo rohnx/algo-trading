@@ -1,12 +1,9 @@
-"""Closed-bar ORB behavior, including replay and trading-day boundaries."""
+"""Opening-range construction and independent confirmation timeframes."""
 
-import sys
-import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from signals import Candle, IST, OpeningRangeBreakoutStrategy, SignalDirection, Tick
+from orb.signals import Candle, IST, OpeningRangeBreakoutStrategy, SignalDirection, Tick
 
 
 def candle(hour, minute, *, high=110, low=90, close=100, day=5, closed=True, minutes=15):
@@ -15,15 +12,24 @@ def candle(hour, minute, *, high=110, low=90, close=100, day=5, closed=True, min
                   start + timedelta(minutes=minutes), closed)
 
 
+def lock_range(strategy, day=5):
+    for bar in opening_bars(day):
+        strategy.on_candle_close(bar)
+
+
 def opening_bars(day=5):
     return [candle(9, 15, high=105, low=95, day=day),
             candle(9, 30, high=110, low=92, day=day),
             candle(9, 45, high=108, low=90, day=day)]
 
 
-def lock_range(strategy, day=5):
-    for bar in opening_bars(day):
-        strategy.on_candle_close(bar)
+def opening_bars_5m(day=5):
+    bars = []
+    for slot in range(9):
+        start = datetime(2026, 10, day, 9, 15, tzinfo=IST) + timedelta(minutes=slot * 5)
+        bars.append(candle(start.hour, start.minute, day=day, minutes=5))
+    bars[-1].high, bars[-1].low = 112, 88
+    return bars
 
 
 class OpeningRangeTests(unittest.TestCase):
@@ -217,15 +223,6 @@ class OpeningRangeTests(unittest.TestCase):
         self.assertIsNone(strategy.session_date)
 
 
-def opening_bars_5m(day=5):
-    bars = []
-    for slot in range(9):
-        start = datetime(2026, 10, day, 9, 15, tzinfo=IST) + timedelta(minutes=slot * 5)
-        bars.append(candle(start.hour, start.minute, day=day, minutes=5))
-    bars[-1].high, bars[-1].low = 112, 88
-    return bars
-
-
 class TimeframePairTests(unittest.TestCase):
     def test_default_30m_range_locks_at_0945_and_confirms_at_1000(self):
         strategy = OpeningRangeBreakoutStrategy()
@@ -408,7 +405,3 @@ class TimeframePairTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 OpeningRangeBreakoutStrategy(range_minutes=range_minutes,
                                              confirmation_minutes=confirmation_minutes)
-
-
-if __name__ == "__main__":
-    unittest.main()
