@@ -1,0 +1,375 @@
+{
+  "observed_at_ist": "2026-10-23T09:35:21.064182+05:30",
+  "requires_authentication": false,
+  "masters": {
+    "NFO": {
+      "url": "https://api.shoonya.com/NFO_symbols.txt.zip",
+      "underlying": "NIFTY",
+      "master_symbol": "NIFTY",
+      "status_code": 200,
+      "last_modified": "Fri, 23 Oct 2026 01:55:15 GMT",
+      "total_master_rows": 87083,
+      "underlying_option_rows": 4067,
+      "expiries": [
+        {
+          "expiry": "27-OCT-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 261,
+          "put_contracts": 261,
+          "strike_count": 261
+        },
+        {
+          "expiry": "03-NOV-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 235,
+          "put_contracts": 235,
+          "strike_count": 235
+        },
+        {
+          "expiry": "09-NOV-2026",
+          "weekday": "Monday",
+          "call_contracts": 229,
+          "put_contracts": 229,
+          "strike_count": 229
+        },
+        {
+          "expiry": "17-NOV-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 222,
+          "put_contracts": 222,
+          "strike_count": 222
+        },
+        {
+          "expiry": "23-NOV-2026",
+          "weekday": "Monday",
+          "call_contracts": 253,
+          "put_contracts": 253,
+          "strike_count": 253
+        },
+        {
+          "expiry": "01-DEC-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 215,
+          "put_contracts": 215,
+          "strike_count": 215
+        },
+        {
+          "expiry": "29-DEC-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 257,
+          "put_contracts": 258,
+          "strike_count": 259
+        },
+        {
+          "expiry": "30-MAR-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "29-JUN-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 33,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "28-SEP-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 30,
+          "put_contracts": 30,
+          "strike_count": 30
+        },
+        {
+          "expiry": "28-DEC-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 34,
+          "put_contracts": 39,
+          "strike_count": 39
+        },
+        {
+          "expiry": "27-JUN-2028",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "26-DEC-2028",
+          "weekday": "Tuesday",
+          "call_contracts": 33,
+          "put_contracts": 37,
+          "strike_count": 38
+        },
+        {
+          "expiry": "26-JUN-2029",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "24-DEC-2029",
+          "weekday": "Monday",
+          "call_contracts": 32,
+          "put_contracts": 35,
+          "strike_count": 35
+        },
+        {
+          "expiry": "25-JUN-2030",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "31-DEC-2030",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "24-JUN-2031",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        }
+      ],
+      "first_three_chronological_contracts": [
+        {
+          "Exchange": "NFO",
+          "Token": "41735",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26C17000",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "17000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "41736",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26P17000",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "17000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "41737",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26C17050",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "17050",
+          "TickSize": "0.05"
+        }
+      ],
+      "futures_expiries": [
+        "27-OCT-2026",
+        "23-NOV-2026",
+        "29-DEC-2026"
+      ],
+      "expiry_type_field_present": false
+    },
+    "BFO": {
+      "url": "https://api.shoonya.com/BFO_symbols.txt.zip",
+      "underlying": "SENSEX",
+      "master_symbol": "BSXOPT",
+      "status_code": 200,
+      "last_modified": "Fri, 23 Oct 2026 01:55:27 GMT",
+      "total_master_rows": 41941,
+      "underlying_option_rows": 3196,
+      "expiries": [
+        {
+          "expiry": "29-OCT-2026",
+          "weekday": "Thursday",
+          "call_contracts": 215,
+          "put_contracts": 215,
+          "strike_count": 215
+        },
+        {
+          "expiry": "05-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 174,
+          "put_contracts": 174,
+          "strike_count": 174
+        },
+        {
+          "expiry": "12-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 172,
+          "put_contracts": 172,
+          "strike_count": 172
+        },
+        {
+          "expiry": "19-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 172,
+          "put_contracts": 172,
+          "strike_count": 172
+        },
+        {
+          "expiry": "26-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 198,
+          "put_contracts": 198,
+          "strike_count": 198
+        },
+        {
+          "expiry": "03-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 156,
+          "put_contracts": 156,
+          "strike_count": 156
+        },
+        {
+          "expiry": "10-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 141,
+          "put_contracts": 141,
+          "strike_count": 141
+        },
+        {
+          "expiry": "31-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 176,
+          "put_contracts": 176,
+          "strike_count": 176
+        },
+        {
+          "expiry": "25-MAR-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "24-JUN-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "30-SEP-2027",
+          "weekday": "Thursday",
+          "call_contracts": 14,
+          "put_contracts": 14,
+          "strike_count": 14
+        },
+        {
+          "expiry": "30-DEC-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "29-JUN-2028",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "28-DEC-2028",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "28-JUN-2029",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "27-DEC-2029",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "27-JUN-2030",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "26-DEC-2030",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "26-JUN-2031",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        }
+      ],
+      "first_three_chronological_contracts": [
+        {
+          "Exchange": "BFO",
+          "Token": "1163172",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64600CE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "64600",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "BFO",
+          "Token": "1163407",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64600PE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "64600",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "BFO",
+          "Token": "1163519",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64700CE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "64700",
+          "TickSize": "0.05"
+        }
+      ],
+      "futures_expiries": [
+        "29-OCT-2026",
+        "26-NOV-2026",
+        "31-DEC-2026"
+      ],
+      "expiry_type_field_present": false
+    }
+  }
+}

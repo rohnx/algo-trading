@@ -1,0 +1,1346 @@
+{
+  "probe": "Shoonya PCR and expiry data cold test",
+  "started_at_ist": "2026-10-23T09:34:31.548001+05:30",
+  "safety": {
+    "read_only_endpoints": [
+      "GenAcsTok",
+      "GetOptionChain",
+      "GetQuotes",
+      "GetSecurityInfo",
+      "SearchScrip",
+      "TPSeries"
+    ],
+    "auth_attempts_max": 1,
+    "sends_orders": false,
+    "sends_notifications": false,
+    "writes_credentials": false
+  },
+  "masters": {
+    "NFO": {
+      "url": "https://api.shoonya.com/NFO_symbols.txt.zip",
+      "status_code": 200,
+      "http_date": "Fri, 23 Oct 2026 04:04:31 GMT",
+      "last_modified": "Fri, 23 Oct 2026 01:55:15 GMT",
+      "compressed_bytes": 739393,
+      "archive_files": [
+        "NFO_symbols.txt"
+      ],
+      "columns": [
+        "Exchange",
+        "Token",
+        "LotSize",
+        "Symbol",
+        "TradingSymbol",
+        "Expiry",
+        "Instrument",
+        "OptionType",
+        "StrikePrice",
+        "TickSize",
+        ""
+      ],
+      "row_count": 87083,
+      "option_contract_count": 4067,
+      "expiries": [
+        {
+          "expiry": "27-OCT-2026",
+          "weekday": "Tuesday",
+          "contract_count": 522,
+          "calls": 261,
+          "puts": 261,
+          "strike_count": 261,
+          "min_strike": 17000.0,
+          "max_strike": 30000.0
+        },
+        {
+          "expiry": "03-NOV-2026",
+          "weekday": "Tuesday",
+          "contract_count": 470,
+          "calls": 235,
+          "puts": 235,
+          "strike_count": 235,
+          "min_strike": 17000.0,
+          "max_strike": 28700.0
+        },
+        {
+          "expiry": "09-NOV-2026",
+          "weekday": "Monday",
+          "contract_count": 458,
+          "calls": 229,
+          "puts": 229,
+          "strike_count": 229,
+          "min_strike": 17000.0,
+          "max_strike": 28400.0
+        },
+        {
+          "expiry": "17-NOV-2026",
+          "weekday": "Tuesday",
+          "contract_count": 444,
+          "calls": 222,
+          "puts": 222,
+          "strike_count": 222,
+          "min_strike": 17350.0,
+          "max_strike": 28400.0
+        },
+        {
+          "expiry": "23-NOV-2026",
+          "weekday": "Monday",
+          "contract_count": 506,
+          "calls": 253,
+          "puts": 253,
+          "strike_count": 253,
+          "min_strike": 17000.0,
+          "max_strike": 29600.0
+        },
+        {
+          "expiry": "01-DEC-2026",
+          "weekday": "Tuesday",
+          "contract_count": 430,
+          "calls": 215,
+          "puts": 215,
+          "strike_count": 215,
+          "min_strike": 17450.0,
+          "max_strike": 28150.0
+        },
+        {
+          "expiry": "29-DEC-2026",
+          "weekday": "Tuesday",
+          "contract_count": 515,
+          "calls": 257,
+          "puts": 258,
+          "strike_count": 259,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "30-MAR-2027",
+          "weekday": "Tuesday",
+          "contract_count": 64,
+          "calls": 32,
+          "puts": 32,
+          "strike_count": 32,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "29-JUN-2027",
+          "weekday": "Tuesday",
+          "contract_count": 66,
+          "calls": 33,
+          "puts": 33,
+          "strike_count": 33,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "28-SEP-2027",
+          "weekday": "Tuesday",
+          "contract_count": 60,
+          "calls": 30,
+          "puts": 30,
+          "strike_count": 30,
+          "min_strike": 1500.0,
+          "max_strike": 45000.0
+        },
+        {
+          "expiry": "28-DEC-2027",
+          "weekday": "Tuesday",
+          "contract_count": 73,
+          "calls": 34,
+          "puts": 39,
+          "strike_count": 39,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "27-JUN-2028",
+          "weekday": "Tuesday",
+          "contract_count": 65,
+          "calls": 32,
+          "puts": 33,
+          "strike_count": 33,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "26-DEC-2028",
+          "weekday": "Tuesday",
+          "contract_count": 70,
+          "calls": 33,
+          "puts": 37,
+          "strike_count": 38,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "26-JUN-2029",
+          "weekday": "Tuesday",
+          "contract_count": 65,
+          "calls": 32,
+          "puts": 33,
+          "strike_count": 33,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "24-DEC-2029",
+          "weekday": "Monday",
+          "contract_count": 67,
+          "calls": 32,
+          "puts": 35,
+          "strike_count": 35,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "25-JUN-2030",
+          "weekday": "Tuesday",
+          "contract_count": 64,
+          "calls": 32,
+          "puts": 32,
+          "strike_count": 32,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "31-DEC-2030",
+          "weekday": "Tuesday",
+          "contract_count": 64,
+          "calls": 32,
+          "puts": 32,
+          "strike_count": 32,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        },
+        {
+          "expiry": "24-JUN-2031",
+          "weekday": "Tuesday",
+          "contract_count": 64,
+          "calls": 32,
+          "puts": 32,
+          "strike_count": 32,
+          "min_strike": 1500.0,
+          "max_strike": 48000.0
+        }
+      ],
+      "sample_contracts": [
+        {
+          "Exchange": "NFO",
+          "Token": "89665",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY26JUN29P39000",
+          "Expiry": "26-JUN-2029",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "39000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "89664",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY26JUN29C39000",
+          "Expiry": "26-JUN-2029",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "39000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "89655",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY26JUN29P36000",
+          "Expiry": "26-JUN-2029",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "36000",
+          "TickSize": "0.05"
+        }
+      ]
+    },
+    "BFO": {
+      "url": "https://api.shoonya.com/BFO_symbols.txt.zip",
+      "status_code": 200,
+      "http_date": "Fri, 23 Oct 2026 04:04:32 GMT",
+      "last_modified": "Fri, 23 Oct 2026 01:55:26 GMT",
+      "compressed_bytes": 393336,
+      "archive_files": [
+        "BFO_symbols.txt"
+      ],
+      "columns": [
+        "Exchange",
+        "Token",
+        "LotSize",
+        "Symbol",
+        "TradingSymbol",
+        "Expiry",
+        "Instrument",
+        "OptionType",
+        "StrikePrice",
+        "TickSize",
+        ""
+      ],
+      "row_count": 41941,
+      "option_contract_count": 0,
+      "expiries": [],
+      "sample_contracts": []
+    }
+  },
+  "market_probes": [
+    {
+      "probe": "NIFTY_spot_positive_control",
+      "returned": true,
+      "public_fields": {
+        "stat": "Ok",
+        "exch": "NSE",
+        "token": "26000",
+        "tsym": "Nifty 50",
+        "lp": "22693.30"
+      }
+    },
+    {
+      "probe": "NIFTY_option_chain_count_2",
+      "returned": true,
+      "expiry": "27-OCT-2026",
+      "row_count": 8,
+      "keys": [
+        "cname",
+        "exch",
+        "instname",
+        "ls",
+        "optt",
+        "pp",
+        "strprc",
+        "ti",
+        "token",
+        "tsym"
+      ],
+      "rows": [
+        {
+          "exch": "NFO",
+          "token": "51340",
+          "tsym": "NIFTY27OCT26C22700",
+          "optt": "CE",
+          "strprc": "22700.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51342",
+          "tsym": "NIFTY27OCT26C22750",
+          "optt": "CE",
+          "strprc": "22750.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51338",
+          "tsym": "NIFTY27OCT26C22650",
+          "optt": "CE",
+          "strprc": "22650.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51334",
+          "tsym": "NIFTY27OCT26C22600",
+          "optt": "CE",
+          "strprc": "22600.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51341",
+          "tsym": "NIFTY27OCT26P22700",
+          "optt": "PE",
+          "strprc": "22700.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51343",
+          "tsym": "NIFTY27OCT26P22750",
+          "optt": "PE",
+          "strprc": "22750.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51339",
+          "tsym": "NIFTY27OCT26P22650",
+          "optt": "PE",
+          "strprc": "22650.00"
+        },
+        {
+          "exch": "NFO",
+          "token": "51337",
+          "tsym": "NIFTY27OCT26P22600",
+          "optt": "PE",
+          "strprc": "22600.00"
+        }
+      ],
+      "universe": "partial; count=2 near ATM, not complete expiry"
+    },
+    {
+      "probe": "NIFTY_CE_quote",
+      "returned": true,
+      "public_fields": {
+        "stat": "Ok",
+        "exch": "NFO",
+        "token": "51340",
+        "tsym": "NIFTY27OCT26C22700",
+        "lp": "185.45",
+        "oi": "8167380",
+        "v": "28055560",
+        "ltt": "09:34:32",
+        "strprc": "22700.00"
+      }
+    },
+    {
+      "probe": "NIFTY_CE_security",
+      "returned": true,
+      "public_fields": {
+        "stat": "Ok",
+        "exch": "NFO",
+        "token": "51340",
+        "tsym": "NIFTY27OCT26C22700",
+        "exd": "27-OCT-2026",
+        "optt": "CE",
+        "strprc": "22700.00",
+        "ls": "65",
+        "instname": "OPTIDX",
+        "dname": "NIFTY 27OCT26 22700 CE "
+      }
+    },
+    {
+      "probe": "NIFTY_CE_5m_history_today",
+      "returned": true,
+      "row_count": 4,
+      "keys": [
+        "intc",
+        "inth",
+        "intl",
+        "into",
+        "intoi",
+        "intv",
+        "intvwap",
+        "oi",
+        "ssboe",
+        "stat",
+        "time",
+        "v"
+      ],
+      "sample_rows": [
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:30:00",
+          "ssboe": "1792728000",
+          "into": "201.00",
+          "inth": "206.15",
+          "intl": "176.45",
+          "intc": "181.30",
+          "intv": "5021835",
+          "v": "27365130",
+          "intoi": "710320",
+          "oi": "7983690"
+        },
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:25:00",
+          "ssboe": "1792727700",
+          "into": "195.00",
+          "inth": "224.55",
+          "intl": "195.00",
+          "intc": "200.80",
+          "intv": "6137885",
+          "v": "22343295",
+          "intoi": "66625",
+          "oi": "7273370"
+        },
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:20:00",
+          "ssboe": "1792727400",
+          "into": "210.50",
+          "inth": "219.40",
+          "intl": "189.15",
+          "intc": "195.20",
+          "intv": "6456190",
+          "v": "16205410",
+          "intoi": "1039285",
+          "oi": "7206745"
+        }
+      ]
+    },
+    {
+      "probe": "NIFTY_PE_quote",
+      "returned": true,
+      "public_fields": {
+        "stat": "Ok",
+        "exch": "NFO",
+        "token": "51341",
+        "tsym": "NIFTY27OCT26P22700",
+        "lp": "135.20",
+        "oi": "13866125",
+        "v": "67010970",
+        "ltt": "09:34:33",
+        "strprc": "22700.00"
+      }
+    },
+    {
+      "probe": "NIFTY_PE_security",
+      "returned": true,
+      "public_fields": {
+        "stat": "Ok",
+        "exch": "NFO",
+        "token": "51341",
+        "tsym": "NIFTY27OCT26P22700",
+        "exd": "27-OCT-2026",
+        "optt": "PE",
+        "strprc": "22700.00",
+        "ls": "65",
+        "instname": "OPTIDX",
+        "dname": "NIFTY 27OCT26 22700 PE "
+      }
+    },
+    {
+      "probe": "NIFTY_PE_5m_history_today",
+      "returned": true,
+      "row_count": 4,
+      "keys": [
+        "intc",
+        "inth",
+        "intl",
+        "into",
+        "intoi",
+        "intv",
+        "intvwap",
+        "oi",
+        "ssboe",
+        "stat",
+        "time",
+        "v"
+      ],
+      "sample_rows": [
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:30:00",
+          "ssboe": "1792728000",
+          "into": "120.85",
+          "inth": "143.55",
+          "intl": "116.85",
+          "intc": "138.20",
+          "intv": "15074215",
+          "v": "65325195",
+          "intoi": "901745",
+          "oi": "13950170"
+        },
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:25:00",
+          "ssboe": "1792727700",
+          "into": "126.80",
+          "inth": "126.80",
+          "intl": "107.40",
+          "intc": "121.30",
+          "intv": "11245780",
+          "v": "50250980",
+          "intoi": "900120",
+          "oi": "13048425"
+        },
+        {
+          "stat": "Ok",
+          "time": "23-10-2026 09:20:00",
+          "ssboe": "1792727400",
+          "into": "123.10",
+          "inth": "135.00",
+          "intl": "113.85",
+          "intc": "126.95",
+          "intv": "18327205",
+          "v": "39005200",
+          "intoi": "1716520",
+          "oi": "12148305"
+        }
+      ]
+    }
+  ],
+  "credential_presence": {
+    "SHOONYA_CLIENT_ID": true,
+    "SHOONYA_USER_ID": true,
+    "SHOONYA_SECRET_CODE": true,
+    "SHOONYA_AUTH_CODE": true
+  },
+  "authentication": {
+    "probe": "oauth_authenticate_once",
+    "returned": true,
+    "attempted": true,
+    "success": true
+  },
+  "websocket": {
+    "opened": true,
+    "duration_seconds": 2.52,
+    "subscription_count": 2,
+    "packet_count": 10,
+    "public_packets": [
+      {
+        "t": "tk",
+        "e": "NFO",
+        "tk": "51340",
+        "ts": "NIFTY27OCT26C22700",
+        "lp": "184.45",
+        "v": "28119195",
+        "oi": "8167380",
+        "poi": "6089590",
+        "ft": "1792728275"
+      },
+      {
+        "t": "tk",
+        "e": "NFO",
+        "tk": "51341",
+        "ts": "NIFTY27OCT26P22700",
+        "lp": "135.75",
+        "v": "67073175",
+        "oi": "13866125",
+        "poi": "7366775",
+        "ft": "1792728275"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51341",
+        "lp": "136.00",
+        "ft": "1792728276"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51340",
+        "lp": "184.60",
+        "ft": "1792728276"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51341",
+        "lp": "136.05",
+        "ft": "1792728277"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51340",
+        "lp": "183.95",
+        "ft": "1792728277"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51341",
+        "lp": "135.65",
+        "v": "67104505",
+        "ft": "1792728277"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51340",
+        "lp": "185.00",
+        "v": "28135835",
+        "ft": "1792728277"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51341",
+        "lp": "134.15",
+        "ft": "1792728278"
+      },
+      {
+        "t": "tf",
+        "e": "NFO",
+        "tk": "51340",
+        "lp": "186.00",
+        "ft": "1792728278"
+      }
+    ],
+    "errors": []
+  },
+  "requests": [
+    {
+      "route": "GenAcsTok",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "USERID",
+        "access_token",
+        "actid",
+        "brkname",
+        "brnchid",
+        "exarr",
+        "exch_prd",
+        "expires_in",
+        "lastaccesstime",
+        "lastpwdtime",
+        "mws",
+        "orarr",
+        "prarr",
+        "refresh_token",
+        "scope",
+        "stat",
+        "susertoken",
+        "totp_set",
+        "uid",
+        "uname",
+        "values"
+      ]
+    },
+    {
+      "route": "GetQuotes",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "c",
+        "cname",
+        "cutof_all",
+        "exch",
+        "h",
+        "instname",
+        "l",
+        "lp",
+        "ls",
+        "lut",
+        "mult",
+        "o",
+        "pp",
+        "prcftr_d",
+        "request_time",
+        "seg",
+        "stat",
+        "symname",
+        "ti",
+        "toi",
+        "token",
+        "tsym",
+        "wk52_h",
+        "wk52_l"
+      ]
+    },
+    {
+      "route": "GetOptionChain",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "stat",
+        "values"
+      ]
+    },
+    {
+      "route": "GetQuotes",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "ap",
+        "bo1",
+        "bo2",
+        "bo3",
+        "bo4",
+        "bo5",
+        "bp1",
+        "bp2",
+        "bp3",
+        "bp4",
+        "bp5",
+        "bq1",
+        "bq2",
+        "bq3",
+        "bq4",
+        "bq5",
+        "c",
+        "cutof_all",
+        "exch",
+        "h",
+        "l",
+        "lc",
+        "llpp",
+        "lp",
+        "ls",
+        "ltq",
+        "ltt",
+        "lut",
+        "mult",
+        "o",
+        "oi",
+        "pp",
+        "prcftr_d",
+        "request_time",
+        "so1",
+        "so2",
+        "so3",
+        "so4",
+        "so5",
+        "sp1",
+        "sp2",
+        "sp3",
+        "sp4",
+        "sp5",
+        "sptprc",
+        "sq1",
+        "sq2",
+        "sq3",
+        "sq4",
+        "sq5",
+        "stat",
+        "strprc",
+        "tbq",
+        "ti",
+        "token",
+        "tsq",
+        "tsym",
+        "uc",
+        "ulpp",
+        "v"
+      ]
+    },
+    {
+      "route": "GetSecurityInfo",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "cname",
+        "delmrg",
+        "dname",
+        "exch",
+        "exd",
+        "expmrg",
+        "exptime",
+        "frzqty",
+        "instname",
+        "lc",
+        "llpp",
+        "ls",
+        "mult",
+        "optt",
+        "pp",
+        "prcftr",
+        "prcftr_d",
+        "request_time",
+        "seg",
+        "stat",
+        "strprc",
+        "symname",
+        "ti",
+        "token",
+        "tsym",
+        "uc",
+        "ulpp",
+        "und_exch",
+        "und_tk",
+        "varmrg"
+      ]
+    },
+    {
+      "route": "TPSeries",
+      "status_code": 200,
+      "response_kind": "list"
+    },
+    {
+      "route": "GetQuotes",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "ap",
+        "bo1",
+        "bo2",
+        "bo3",
+        "bo4",
+        "bo5",
+        "bp1",
+        "bp2",
+        "bp3",
+        "bp4",
+        "bp5",
+        "bq1",
+        "bq2",
+        "bq3",
+        "bq4",
+        "bq5",
+        "c",
+        "cutof_all",
+        "exch",
+        "h",
+        "l",
+        "lc",
+        "llpp",
+        "lp",
+        "ls",
+        "ltq",
+        "ltt",
+        "lut",
+        "mult",
+        "o",
+        "oi",
+        "pp",
+        "prcftr_d",
+        "request_time",
+        "so1",
+        "so2",
+        "so3",
+        "so4",
+        "so5",
+        "sp1",
+        "sp2",
+        "sp3",
+        "sp4",
+        "sp5",
+        "sptprc",
+        "sq1",
+        "sq2",
+        "sq3",
+        "sq4",
+        "sq5",
+        "stat",
+        "strprc",
+        "tbq",
+        "ti",
+        "token",
+        "tsq",
+        "tsym",
+        "uc",
+        "ulpp",
+        "v"
+      ]
+    },
+    {
+      "route": "GetSecurityInfo",
+      "status_code": 200,
+      "response_kind": "dict",
+      "ok": true,
+      "keys": [
+        "cname",
+        "delmrg",
+        "dname",
+        "exch",
+        "exd",
+        "expmrg",
+        "exptime",
+        "frzqty",
+        "instname",
+        "lc",
+        "llpp",
+        "ls",
+        "mult",
+        "optt",
+        "pp",
+        "prcftr",
+        "prcftr_d",
+        "request_time",
+        "seg",
+        "stat",
+        "strprc",
+        "symname",
+        "ti",
+        "token",
+        "tsym",
+        "uc",
+        "ulpp",
+        "und_exch",
+        "und_tk",
+        "varmrg"
+      ]
+    },
+    {
+      "route": "TPSeries",
+      "status_code": 200,
+      "response_kind": "list"
+    }
+  ],
+  "finished_at_ist": "2026-10-23T09:34:38.268407+05:30",
+  "public_master_followup": {
+    "NFO": {
+      "url": "https://api.shoonya.com/NFO_symbols.txt.zip",
+      "underlying": "NIFTY",
+      "master_symbol": "NIFTY",
+      "status_code": 200,
+      "last_modified": "Fri, 23 Oct 2026 01:55:15 GMT",
+      "total_master_rows": 87083,
+      "underlying_option_rows": 4067,
+      "expiries": [
+        {
+          "expiry": "27-OCT-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 261,
+          "put_contracts": 261,
+          "strike_count": 261
+        },
+        {
+          "expiry": "03-NOV-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 235,
+          "put_contracts": 235,
+          "strike_count": 235
+        },
+        {
+          "expiry": "09-NOV-2026",
+          "weekday": "Monday",
+          "call_contracts": 229,
+          "put_contracts": 229,
+          "strike_count": 229
+        },
+        {
+          "expiry": "17-NOV-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 222,
+          "put_contracts": 222,
+          "strike_count": 222
+        },
+        {
+          "expiry": "23-NOV-2026",
+          "weekday": "Monday",
+          "call_contracts": 253,
+          "put_contracts": 253,
+          "strike_count": 253
+        },
+        {
+          "expiry": "01-DEC-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 215,
+          "put_contracts": 215,
+          "strike_count": 215
+        },
+        {
+          "expiry": "29-DEC-2026",
+          "weekday": "Tuesday",
+          "call_contracts": 257,
+          "put_contracts": 258,
+          "strike_count": 259
+        },
+        {
+          "expiry": "30-MAR-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "29-JUN-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 33,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "28-SEP-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 30,
+          "put_contracts": 30,
+          "strike_count": 30
+        },
+        {
+          "expiry": "28-DEC-2027",
+          "weekday": "Tuesday",
+          "call_contracts": 34,
+          "put_contracts": 39,
+          "strike_count": 39
+        },
+        {
+          "expiry": "27-JUN-2028",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "26-DEC-2028",
+          "weekday": "Tuesday",
+          "call_contracts": 33,
+          "put_contracts": 37,
+          "strike_count": 38
+        },
+        {
+          "expiry": "26-JUN-2029",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 33,
+          "strike_count": 33
+        },
+        {
+          "expiry": "24-DEC-2029",
+          "weekday": "Monday",
+          "call_contracts": 32,
+          "put_contracts": 35,
+          "strike_count": 35
+        },
+        {
+          "expiry": "25-JUN-2030",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "31-DEC-2030",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        },
+        {
+          "expiry": "24-JUN-2031",
+          "weekday": "Tuesday",
+          "call_contracts": 32,
+          "put_contracts": 32,
+          "strike_count": 32
+        }
+      ],
+      "first_three_chronological_contracts": [
+        {
+          "Exchange": "NFO",
+          "Token": "41735",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26C17000",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "17000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "41736",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26P17000",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "17000",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "NFO",
+          "Token": "41737",
+          "LotSize": "65",
+          "Symbol": "NIFTY",
+          "TradingSymbol": "NIFTY27OCT26C17050",
+          "Expiry": "27-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "17050",
+          "TickSize": "0.05"
+        }
+      ],
+      "futures_expiries": [
+        "27-OCT-2026",
+        "23-NOV-2026",
+        "29-DEC-2026"
+      ],
+      "expiry_type_field_present": false,
+      "current_date_is_listed_option_expiry": false
+    },
+    "BFO": {
+      "url": "https://api.shoonya.com/BFO_symbols.txt.zip",
+      "underlying": "SENSEX",
+      "master_symbol": "BSXOPT",
+      "status_code": 200,
+      "last_modified": "Fri, 23 Oct 2026 01:55:27 GMT",
+      "total_master_rows": 41941,
+      "underlying_option_rows": 3196,
+      "expiries": [
+        {
+          "expiry": "29-OCT-2026",
+          "weekday": "Thursday",
+          "call_contracts": 215,
+          "put_contracts": 215,
+          "strike_count": 215
+        },
+        {
+          "expiry": "05-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 174,
+          "put_contracts": 174,
+          "strike_count": 174
+        },
+        {
+          "expiry": "12-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 172,
+          "put_contracts": 172,
+          "strike_count": 172
+        },
+        {
+          "expiry": "19-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 172,
+          "put_contracts": 172,
+          "strike_count": 172
+        },
+        {
+          "expiry": "26-NOV-2026",
+          "weekday": "Thursday",
+          "call_contracts": 198,
+          "put_contracts": 198,
+          "strike_count": 198
+        },
+        {
+          "expiry": "03-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 156,
+          "put_contracts": 156,
+          "strike_count": 156
+        },
+        {
+          "expiry": "10-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 141,
+          "put_contracts": 141,
+          "strike_count": 141
+        },
+        {
+          "expiry": "31-DEC-2026",
+          "weekday": "Thursday",
+          "call_contracts": 176,
+          "put_contracts": 176,
+          "strike_count": 176
+        },
+        {
+          "expiry": "25-MAR-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "24-JUN-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "30-SEP-2027",
+          "weekday": "Thursday",
+          "call_contracts": 14,
+          "put_contracts": 14,
+          "strike_count": 14
+        },
+        {
+          "expiry": "30-DEC-2027",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "29-JUN-2028",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "28-DEC-2028",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "28-JUN-2029",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "27-DEC-2029",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "27-JUN-2030",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "26-DEC-2030",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        },
+        {
+          "expiry": "26-JUN-2031",
+          "weekday": "Thursday",
+          "call_contracts": 18,
+          "put_contracts": 18,
+          "strike_count": 18
+        }
+      ],
+      "first_three_chronological_contracts": [
+        {
+          "Exchange": "BFO",
+          "Token": "1163172",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64600CE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "64600",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "BFO",
+          "Token": "1163407",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64600PE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "PE",
+          "StrikePrice": "64600",
+          "TickSize": "0.05"
+        },
+        {
+          "Exchange": "BFO",
+          "Token": "1163519",
+          "LotSize": "20",
+          "Symbol": "BSXOPT",
+          "TradingSymbol": "SENSEX26OCT64700CE",
+          "Expiry": "29-OCT-2026",
+          "Instrument": "OPTIDX",
+          "OptionType": "CE",
+          "StrikePrice": "64700",
+          "TickSize": "0.05"
+        }
+      ],
+      "futures_expiries": [
+        "29-OCT-2026",
+        "26-NOV-2026",
+        "31-DEC-2026"
+      ],
+      "expiry_type_field_present": false,
+      "current_date_is_listed_option_expiry": false
+    }
+  },
+  "interpretation": {
+    "nifty_option_open_interest": "Verified with authenticated CE and PE quotes and tk websocket snapshots.",
+    "nifty_historical_open_interest": "Verified current-day 5m raw history oi field. intoi is a distinct interval/change field; do not substitute for total oi.",
+    "option_chain": "Observed GetOptionChain count=2 returns 8 option metadata rows without lp/oi. Resolve tokens first then obtain OI via quotes/stream.",
+    "pcr_scope": "Only one strike pair was quoted/subscribed. This proves raw ingredients, not complete-chain PCR availability, throughput, or recovery.",
+    "history_candle_completion": "At 09:34 response includes current 09:30 five-minute bucket; not all returned candles are closed.",
+    "oi_freshness": "tk initial snapshots included oi and ft. Sample tf deltas omitted oi; carrying forward OI needs independent field freshness and provenance.",
+    "sensex": "Exact listed SENSEX expiries verified in public BFO master using Symbol=BSXOPT. Authenticated SENSEX option quotes/history not tested.",
+    "expiry_type": "Master provides exact dates, not an explicit weekly/monthly flag. Match exchange calendars/rules; monthly supersedes weekly when coincident.",
+    "rerun_warning": "Original authcode exchanged successfully once. Do not retry authentication automatically; a rerun may require renewed auth code.",
+    "data_not_strategy_validation": "Data availability does not validate a PCR directional signal or the risk-multiple table."
+  }
+}

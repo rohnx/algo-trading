@@ -1,0 +1,109 @@
+{
+  "retrieved_at": "2026-10-23T10:02:28.624682+00:00",
+  "results": [
+    {
+      "query": "interview-me",
+      "url": "https://skills.sh/api/search?q=interview-me&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/interview-me",
+          "source": "addyosmani/agent-skills",
+          "skillId": "interview-me",
+          "name": "interview-me",
+          "installs": 55351
+        }
+      ]
+    },
+    {
+      "query": "spec-driven-development",
+      "url": "https://skills.sh/api/search?q=spec-driven-development&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/spec-driven-development",
+          "source": "addyosmani/agent-skills",
+          "skillId": "spec-driven-development",
+          "name": "spec-driven-development",
+          "installs": 62844
+        }
+      ]
+    },
+    {
+      "query": "source-driven-development",
+      "url": "https://skills.sh/api/search?q=source-driven-development&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/source-driven-development",
+          "source": "addyosmani/agent-skills",
+          "skillId": "source-driven-development",
+          "name": "source-driven-development",
+          "installs": 56213
+        }
+      ]
+    },
+    {
+      "query": "api-and-interface-design",
+      "url": "https://skills.sh/api/search?q=api-and-interface-design&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/api-and-interface-design",
+          "source": "addyosmani/agent-skills",
+          "skillId": "api-and-interface-design",
+          "name": "api-and-interface-design",
+          "installs": 60325
+        }
+      ]
+    },
+    {
+      "query": "incremental-implementation",
+      "url": "https://skills.sh/api/search?q=incremental-implementation&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/incremental-implementation",
+          "source": "addyosmani/agent-skills",
+          "skillId": "incremental-implementation",
+          "name": "incremental-implementation",
+          "installs": 59958
+        }
+      ]
+    },
+    {
+      "query": "test-driven-development",
+      "url": "https://skills.sh/api/search?q=test-driven-development&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/test-driven-development",
+          "source": "addyosmani/agent-skills",
+          "skillId": "test-driven-development",
+          "name": "test-driven-development",
+          "installs": 59870
+        }
+      ]
+    },
+    {
+      "query": "frontend-ui-engineering",
+      "url": "https://skills.sh/api/search?q=frontend-ui-engineering&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/frontend-ui-engineering",
+          "source": "addyosmani/agent-skills",
+          "skillId": "frontend-ui-engineering",
+          "name": "frontend-ui-engineering",
+          "installs": 65243
+        }
+      ]
+    },
+    {
+      "query": "code-review-and-quality",
+      "url": "https://skills.sh/api/search?q=code-review-and-quality&owner=addyosmani&limit=100",
+      "matches": [
+        {
+          "id": "addyosmani/agent-skills/code-review-and-quality",
+          "source": "addyosmani/agent-skills",
+          "skillId": "code-review-and-quality",
+          "name": "code-review-and-quality",
+          "installs": 70740
+        }
+      ]
+    }
+  ]
+}
