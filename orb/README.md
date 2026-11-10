@@ -259,8 +259,8 @@ chat, open your bot in Telegram and send `/start` before enabling delivery.
 Exported environment variables take priority over `.env`. Missing configuration
 disables Telegram and prints the missing variable names at startup.
 
-Each alert includes the direction, second confirmation time in IST, NIFTY price,
-provider, and both setups' confirmation prices and opening ranges. Only new live
+Each alert includes the direction, second confirmation time in IST, provider,
+R Multiple, and both setups' confirmation times. Only new live
 NIFTY confluence signals enqueue alerts. When a live connection's initial history
 recovers a confirmation from the last two minutes, it also queues that alert;
 this covers a connection or source switch spanning the confirmation time.
@@ -268,6 +268,21 @@ Older history, browsing dates and browser replay never send alerts. Alerts are
 limited to one per direction per IST day across providers and restarts.
 The local `/api/session` response includes `telegram_status` for delivery
 diagnostics, without credentials.
+
+Alerts include **R Multiple**, using the editable rules and trading calendar
+under `journal/`. The first main NIFTY signal selects the day's timing band;
+later opposite signals use that same band. A daily manual override entered in
+the journal takes priority. Live provider history can restore an earlier hit
+from today even when it is too old to send a Telegram alert. Recording this
+daily state works with Telegram disabled, and does not require the journal to
+be running. Browsing historical dates and replay do not update it.
+
+The checkout finds its sibling `journal/` automatically. For an installed
+ORB, set `TRADING_RISK_HOME` to the absolute path of that directory. Both tools
+can use `TRADING_RISK_STATE_PATH` to share a different daily-state SQLite file.
+Missing or invalid risk data leaves the monitor and its alerts working; the
+message reports `R Multiple: unavailable`. Calendar rows must be prepared manually
+or with AI-assisted research; the monitor does not fetch exchange calendars.
 
 Delivery runs on a worker so Telegram cannot block quotes or bar closes. Its
 durable outbox is saved under `notifications/`. Transient network/server

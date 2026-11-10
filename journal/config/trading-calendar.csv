@@ -1,0 +1,31 @@
+date,trading_day,expiry_state,source
+2026-11-01,no,,Weekend; regular ORB session calendar
+2026-11-02,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-03,yes,nifty_weekly,https://www.nseindia.com/static/products-services/equity-derivatives-nifty50
+2026-11-04,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-05,yes,sensex_weekly,https://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=20250623-59
+2026-11-06,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-07,no,,Weekend; regular ORB session calendar
+2026-11-08,no,,Muhurat special session only; no regular ORB session; https://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=20251212-8
+2026-11-09,yes,nifty_weekly,Holiday-shifted from Nov10; https://www.nseindia.com/static/products-services/equity-derivatives-nifty50 | https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-10,no,,Holiday; https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-11,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-12,yes,sensex_weekly,https://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=20250623-59
+2026-11-13,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-14,no,,Weekend; regular ORB session calendar
+2026-11-15,no,,Weekend; regular ORB session calendar
+2026-11-16,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-17,yes,nifty_weekly,https://www.nseindia.com/static/products-services/equity-derivatives-nifty50
+2026-11-18,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-19,yes,sensex_weekly,https://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=20250623-59
+2026-11-20,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-21,no,,Weekend; regular ORB session calendar
+2026-11-22,no,,Weekend; regular ORB session calendar
+2026-11-23,yes,nifty_monthly,Holiday-shifted from Nov24; https://www.nseindia.com/static/products-services/equity-derivatives-nifty50 | https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-24,no,,Holiday; https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-25,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-26,yes,sensex_monthly,https://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=20250623-59
+2026-11-27,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf
+2026-11-28,no,,Weekend; regular ORB session calendar
+2026-11-29,no,,Weekend; regular ORB session calendar
+2026-11-30,yes,non_expiry,https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf

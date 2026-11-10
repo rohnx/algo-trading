@@ -14,6 +14,8 @@ dependencies = [
 
 [project.scripts]
 orb = "orb.orb_monitor:main"
+journal = "orb.risk:launch_journal"
+erv = "orb.risk:launch_erv"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]

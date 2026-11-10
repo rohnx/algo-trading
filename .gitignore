@@ -1,12 +1,39 @@
-.env
-.env.
-*__pycache__/
+# Secrets & Environment variables
+.env*
+*.env
 
+# Python artifacts & virtual environment
 __pycache__/
-data/
-
+*.py[cod]
+*$py.class
+*.so
 .venv/
-pyproject.toml
+env/
+venv/
 .python-version
-.agents/
+
+# Local data & databases
+data/
+*.sqlite3
+*.sqlite
+*.db
+
+# Spreadsheets & Exports (personal trading data / journals)
+exports/
+*.xlsx
+*.xls
+*.xlsm
+*.ods
+*.csv
+!journal/config/*.csv
+!erv/*.csv
+
+# Personal notes & agent scratchpads
 to-do.md
+.agents/
+.DS_Store
+Thumbs.db
+*.log
+
+# Temporary screenshots & pasted images
+Pasted image*.png

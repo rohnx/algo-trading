@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import websocket
 
@@ -16,10 +17,11 @@ def on_close(ws, close_status_code, close_msg):
 def on_open(ws):
     print("WebSocket connected to server. Sending auth frame...")
     # Attempt auth frame without valid access token
+    uid = os.getenv("SHOONYA_USER_ID", "dummy_user")
     auth_data = {
         "t": "a",
-        "uid": "FN249893",
-        "actid": "FN249893",
+        "uid": uid,
+        "actid": uid,
         "source": "API",
         "accesstoken": "dummy_token"
     }

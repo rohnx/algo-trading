@@ -1,0 +1,16 @@
+expiry_state,timing_band,r_min,r_max
+non_expiry,before_1015,0.8,1.0
+non_expiry,at_1015,0.7,0.9
+non_expiry,after_1015,0.2,0.6
+sensex_weekly,before_1015,0.4,0.6
+sensex_weekly,at_1015,0.3,0.5
+sensex_weekly,after_1015,0.1,0.3
+nifty_weekly,before_1015,0.1,0.5
+nifty_weekly,at_1015,0.1,0.3
+nifty_weekly,after_1015,0,0.2
+sensex_monthly,before_1015,0.1,0.5
+sensex_monthly,at_1015,0.1,0.3
+sensex_monthly,after_1015,0,0.1
+nifty_monthly,before_1015,0.1,0.3
+nifty_monthly,at_1015,0.1,0.2
+nifty_monthly,after_1015,0,0.1

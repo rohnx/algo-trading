@@ -38,9 +38,14 @@ SOURCE_NAMES = {"yahoo": "Yahoo Finance · ^NSEI", "shoonya": "Shoonya · NIFTY 
 @dataclass
 class ConfluenceSignal(Signal):
     confirmations: dict = field(default_factory=dict)
+    daily_r: str | None = None
+    daily_r_source: str | None = None
 
     def to_dict(self):
-        return {**super().to_dict(), "confirmations": self.confirmations}
+        data = {**super().to_dict(), "confirmations": self.confirmations}
+        if self.daily_r_source is not None:
+            data.update(daily_r=self.daily_r, daily_r_source=self.daily_r_source)
+        return data
 
 
 class DualORBState:
@@ -127,7 +132,7 @@ class MonitorHub:
     current_price = _primary_field("current_price")
     last_tick_time = _primary_field("last_tick_time")
 
-    def __init__(self, *, now=None, cache_dir=None, notifier=None):
+    def __init__(self, *, now=None, cache_dir=None, notifier=None, daily_risk=None):
         self.breakouts = DualORBState()
         self.strategy = self.breakouts.strategies["15"]
         self.strategy_5m = self.breakouts.strategies["5"]
@@ -141,6 +146,8 @@ class MonitorHub:
         self.feed_status, self.feed_error = "waiting", None
         self.feed_manager = None
         self.notifier = notifier
+        self.daily_risk = daily_risk
+        self._pending_risk_signals = {}
         self._notification_keys = set()
         self.cache_dir = cache_dir
         self._comparison_breakouts = {}
@@ -162,6 +169,7 @@ class MonitorHub:
     def _reset(self, session_date):
         self._comparison_breakouts.clear()
         self._notification_keys.clear()
+        self._pending_risk_signals.clear()
         for state in self.instruments.values():
             state.reset(session_date)
         self.breakouts.reset_day()
@@ -195,6 +203,7 @@ class MonitorHub:
         with self.lock:
             for symbol, state in self.instruments.items():
                 self._bars_closed(symbol, state.advance_time(now))
+            self._record_due_risk(now)
             market_closed = now.weekday() >= 5 or not dtime(9, 15) <= now.time() < dtime(15, 30)
             if now.date().isoformat() != self.date:
                 self._reset(now.date().isoformat())
@@ -363,10 +372,45 @@ class MonitorHub:
                 "telegram_status": getattr(self.notifier, "status", None),
                 "signals": [signal.to_dict() for signal in breakouts.signals]}
 
+    def _record_signal_risk(self, signal):
+        try:
+            decision = self.daily_risk.record_first_orb(in_ist(signal.timestamp))
+            signal.daily_r = str(decision.r) if decision is not None and decision.r is not None else None
+            signal.daily_r_source = decision.source if decision is not None else "unavailable"
+        except Exception:
+            # An optional local risk lookup cannot suppress a signal.
+            signal.daily_r, signal.daily_r_source = None, "unavailable"
+
+    def _record_due_risk(self, now):
+        # Only live-admitted confirmations enter this queue. A quote accepted
+        # slightly ahead of wall time must become eligible without a new signal.
+        for key, signal in sorted(self._pending_risk_signals.items()):
+            timestamp = in_ist(signal.timestamp)
+            if timestamp.date() != now.date():
+                del self._pending_risk_signals[key]
+            elif timestamp <= now:
+                del self._pending_risk_signals[key]
+                self._record_signal_risk(signal)
+
     def _notify_signals(self, signals):
-        if self.notifier is None:
+        if not signals:
             return
         now = in_ist(self.now())
+        # Live history can recover an old first hit even when it is too old to
+        # notify. Process it before a later opposite hit and without Telegram.
+        if self.daily_risk is not None:
+            for signal in sorted(self.signals, key=lambda item: item.timestamp):
+                timestamp = in_ist(signal.timestamp)
+                if timestamp.date() != now.date():
+                    continue
+                key = timestamp, signal.direction
+                if timestamp > now:
+                    self._pending_risk_signals[key] = signal
+                    continue
+                self._pending_risk_signals.pop(key, None)
+                self._record_signal_risk(signal)
+        if self.notifier is None:
+            return
         for signal in signals:
             timestamp = in_ist(signal.timestamp)
             key = (timestamp.date(), signal.direction.value)
@@ -533,9 +577,10 @@ def main():
     args = parser.parse_args()
     from .feeds import FeedManager
     from .notifications import TelegramNotifier
+    from .risk import DailyRisk
     cache_dir = data_dir()
     notifier = TelegramNotifier(cache_dir=cache_dir)
-    hub = MonitorHub(cache_dir=cache_dir, notifier=notifier)
+    hub = MonitorHub(cache_dir=cache_dir, notifier=notifier, daily_risk=DailyRisk())
     hub.feed_manager = FeedManager(hub)
     try:
         notifier.start()

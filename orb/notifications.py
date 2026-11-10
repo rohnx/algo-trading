@@ -6,6 +6,7 @@ message. Ordinary repeats, provider switches and clean restarts are deduplicated
 """
 
 from datetime import datetime, time as dtime, timedelta
+from decimal import Decimal, InvalidOperation
 import fcntl
 import json
 import logging
@@ -58,11 +59,11 @@ def format_signal(signal, source_id):
     timestamp = _ist(data["timestamp"])
     if timestamp.weekday() >= 5 or not dtime(10, 5) <= timestamp.time() <= dtime(15, 30):
         raise ValueError("Expected a market-session confirmation")
-    price = _number(data["price"])
-    lines = [f"NIFTY 50 | Both ORBs {direction}",
-             f"Confirmed: {timestamp:%d %b %Y %H:%M:%S} IST",
-             f"NIFTY: {price:,.2f}",
+    _number(data["price"])
+    lines = [f"{direction} | NIFTY 50",
+             f"Both ORBs Confirmed @{timestamp:%H:%M:%S} IST",
              f"Provider: {'Yahoo Finance' if source_id == 'yahoo' else 'Shoonya'}"]
+    setups = []
     latest_confirmation = None
     for interval, range_minutes in ((15, 30), (5, 45)):
         confirmation = data["confirmations"][str(interval)]
@@ -73,15 +74,23 @@ def format_signal(signal, source_id):
         if not timedelta(0) <= timestamp - confirmed < timedelta(minutes=interval):
             raise ValueError("Expired ORB confirmation")
         latest_confirmation = max(latest_confirmation or confirmed, confirmed)
-        close = _number(confirmation["confirmation_price"])
+        _number(confirmation["confirmation_price"])
         high, low = _number(confirmation["orb_high"]), _number(confirmation["orb_low"])
         if high < low:
             raise ValueError("Invalid ORB range")
-        level, side = (high, "above") if direction == "BULLISH" else (low, "below")
-        lines.extend([f"{interval}m close / {range_minutes}m ORB: {close:,.2f} {side} {level:,.2f}",
-                      f"  Confirmed {confirmed:%H:%M:%S} IST | H {high:,.2f} / L {low:,.2f}"])
+        setups.append(f"{interval}m close / {range_minutes}m ORB: Confirmed {confirmed:%H:%M:%S} IST")
     if latest_confirmation != timestamp:
         raise ValueError("Signal time must match the second confirmation")
+    multiple = "unavailable"
+    if data.get("daily_r_source") is not None:
+        try:
+            risk = Decimal(str(data.get("daily_r")))
+            if not risk.is_finite() or risk < 0:
+                raise ValueError("Invalid R")
+            multiple = str(risk)
+        except (InvalidOperation, ValueError):
+            pass
+    lines.extend(["---", f"R Multiple: {multiple}", "---", *setups])
     key = f"{timestamp.date().isoformat()}:NIFTY:{direction}"
     return key, timestamp, "\n".join(lines)
 

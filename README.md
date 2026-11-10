@@ -5,6 +5,7 @@ A comprehensive Python-based algorithmic trading and market monitoring toolkit d
 The repository includes:
 1. **[NIFTY ORB Monitor](#1-nifty-orb-monitor-orb)**: A real-time NIFTY 50 dashboard with 15m/30m and 5m/45m Opening Range Breakout setups, plus a main signal when both agree.
 2. **[Position & Risk Calculator](#2-position--risk-calculator-ervpy)**: A volatility-adjusted position sizing and risk management tool factoring in exchange fees, brokerages, and regulatory taxes.
+3. **[Trading Journal](journal/README.md)**: A saved monthly journal with editable daily-risk and expiry calendars, intraday/swing sizing, and Excel import/export.
 
 ---
 
@@ -26,7 +27,7 @@ From the workspace root, run:
 ```bash
 uv sync
 ```
-This sets up the virtual environment in `.venv/`, installs the `orb` package and its `orb` command, and installs the locked dependencies.
+This sets up the virtual environment in `.venv/`, installs the `orb` package with its `orb`, `journal`, and `erv` commands, and installs the locked dependencies.
 
 ### 3. Running Scripts
 You can run any script directly using `uv run` without manually activating the virtual environment:
@@ -35,7 +36,10 @@ You can run any script directly using `uv run` without manually activating the v
 uv run orb
 
 # Run the Position Sizing Calculator
-uv run python erv.py 2500 500 25
+uv run erv 2500 500 25
+
+# Open the Trading Journal
+uv run journal
 ```
 
 Alternatively, you can activate the environment manually:
@@ -115,6 +119,8 @@ credential names and provider behavior.
 
 A precision position sizing and trade management tool for NSE/BSE equities. It computes exact net risk, stop-loss, breakeven, and reward targets after factoring in regulatory taxes, stamp duty, turnover charges, and broker commissions.
 
+The calculator and its charge configuration live in [`erv/`](erv/README.md).
+
 ### Features
 - **Volatility-Based Sizing**: Calculates position size using Average True Range (ATR) and defined capital risk:
   - `1.7 * ATR` for Intraday (typically 15-minute ATR).
@@ -125,51 +131,64 @@ A precision position sizing and trade management tool for NSE/BSE equities. It c
   - **Delivery**: Long only.
 - **Exchange Support**: Built-in charge formulas for both NSE and BSE.
 - **R-Multiple Targets & PnL**: View multiple reward tiers ($1R$, $2R$, etc.) or compute net PnL against an exit price.
+- **Journal Risk & Entries**: Use `r` as the risk argument to fetch the journal's current risk for your trading style, then optionally save an entered position with its planned exit limit.
 
 ### Usage
 
 #### 1. Interactive Mode
 Run the script without arguments for interactive prompts:
 ```bash
-uv run python erv.py
+uv run erv
 ```
-Prompts include entry price, risk capital (₹), ATR, trading style (`intraday`/`delivery`), exchange (`nse`/`bse`), and direction (`long`/`short`).
+Prompts include entry price, risk capital (₹), ATR, trading style (`intraday`/`delivery`), exchange (`nse`/`bse`), and direction (`long`/`short`). Leave risk blank, or enter `r`, to use journal risk after selecting the style. A numeric risk remains an explicit amount.
 
 #### 2. Command Line Arguments Mode
-Bypass interactive prompts by passing arguments directly:
+Supply the initial calculation inputs directly; exit-price and journal-save prompts remain interactive:
 ```bash
-uv run python erv.py <entry_price> <risk> [atr] [style] [direction] [exchange]
+uv run erv <entry_price> <risk-or-r> <atr> [style] [direction] [exchange]
 ```
 
 #### Examples
 - **Intraday Long on NSE:**
   ```bash
-  uv run python erv.py 2500 500 25
+  uv run erv 2500 500 25
   ```
 - **Intraday Short on BSE:**
   ```bash
-  uv run python erv.py 1200 400 15 i s bse
+  uv run erv 1200 400 15 i s bse
   ```
 - **Delivery Long on NSE:**
   ```bash
-  uv run python erv.py 850 1500 30 delivery long nse
+  uv run erv 850 1500 30 delivery long nse
   ```
+- **Delivery with Journal Risk:**
+  ```bash
+  uv run erv 57.7 r 2.1 d
+  ```
+- **Intraday with Journal Risk:**
+  ```bash
+  uv run erv 57.7 r 2.1 i
+  ```
+
+`r` uses the current IST month's saved journal settings. Intraday includes today's daily R and the latest saved intraday outcomes; delivery uses the swing allocation divided by its slots. Missing setup or unavailable intraday R is reported rather than replaced with another month's risk. Numeric risk works independently of journal setup.
+
+After calculating an exit price, choose **Add to journal?** to save the position as `OPEN`, with that price as its planned exit limit. Entry date defaults to today in IST. Closing positions stays in `uv run journal`. See the [ERV guide](erv/README.md) for the full flow. Direct `uv run erv/erv.py` from the root and `uv run erv.py` from inside `erv/` also remain supported.
 
 #### CLI Parameters
 | Position | Parameter | Type | Default | Options / Notes |
 | :---: | :--- | :--- | :--- | :--- |
 | 1 | `entry_price` | Float | *Required* | Entry stock price |
-| 2 | `risk` | Float | *Required* | Total risk capital (₹) |
-| 3 | `atr` | Float | `0.06 * entry` | ATR volatility measure |
+| 2 | `risk` | Float or `r` | *Required* | Explicit risk capital (₹), or journal risk for the selected style |
+| 3 | `atr` | Float | `0.06 * entry` when blank | ATR volatility measure; pass `''` to use the default |
 | 4 | `style` | String | `intraday` | `intraday` (`i`) or `delivery` (`d`) |
 | 5 | `direction` | String | `long` | `long` (`l`) or `short` (`s`) |
 | 6 | `exchange` | String | `nse` | `nse` or `bse` |
 
 ---
 
-## Charges Configuration (`charges.csv`)
+## Charges Configuration (`erv/charges.csv`)
 
-Transaction charges and taxes are loaded from [`charges.csv`](charges.csv). You can tune these rates based on your broker (Zerodha, Groww, AngelOne, etc.):
+Transaction charges and taxes are loaded from [`erv/charges.csv`](erv/charges.csv), alongside the calculator. You can tune these rates based on your broker (Zerodha, Groww, AngelOne, etc.):
 
 | Charge | Description | Delivery | Intraday |
 | :--- | :--- | :--- | :--- |
@@ -196,6 +215,18 @@ Tests are grouped by responsibility. Run an owner independently, for example
 `uv run python -m unittest orb.tests.market.test_quality`. See the
 [ownership guide](orb/tests/README.md) for the contracts and shared support.
 
+Run the journal suite separately:
+
+```bash
+uv run python -m unittest discover -s journal/tests -t journal
+```
+
+Run the ERV command and journal-integration tests:
+
+```bash
+uv run python -m unittest discover -s erv/tests
+```
+
 ### UI Regression Tests (Playwright)
 Run the headless browser tests verifying Canvas chart rendering and session navigation:
 ```bash
@@ -215,8 +246,20 @@ algo-trading/
 ├── .python-version              # Python version pin (3.14)
 ├── pyproject.toml               # Project metadata & dependencies (uv build)
 ├── uv.lock                      # Locked dependency tree
-├── charges.csv                  # Indian equity brokerage & tax schedule
-├── erv.py                       # Position sizing & risk calculator
+├── erv/                         # Position sizing & risk calculator
+│   ├── erv.py                   # Calculator and interactive prompts
+│   ├── charges.csv              # Indian equity brokerage & tax schedule
+│   ├── journal_bridge.py        # Journal risk and optional entry saving
+│   ├── SPEC.md                  # Integration scope and acceptance criteria
+│   └── tests/                   # ERV command and journal-integration tests
+├── journal/                     # Monthly trading journal (see journal/README.md)
+│   ├── trade.py                 # Terminal launcher
+│   ├── daily_risk.py            # Shared daily R policy
+│   ├── config/                  # Editable risk rules and trading calendar
+│   ├── risk_tool/               # Journal, sizing, and workbook handling
+│   ├── data/                    # Saved trades and shared daily state (ignored)
+│   ├── exports/                 # Excel exports (ignored)
+│   └── tests/                   # Journal test suite
 ├── to-do.md                     # Planned features & backlog
 └── orb/                         # NIFTY ORB Monitor
     ├── README.md                # Monitor-specific notes
